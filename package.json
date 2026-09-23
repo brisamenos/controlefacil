@@ -1,0 +1,16 @@
+{
+  "name": "controle-facil",
+  "version": "1.0.0",
+  "description": "Controle Fácil — clientes, parcelas, pagamentos e lembretes de cobrança",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0"
+  }
+}

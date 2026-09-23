@@ -1,0 +1,812 @@
+/* admin.js — telas do administrador */
+'use strict';
+
+const Admin = {};
+let CFG = null; // configurações do admin (percentuais, formas, descrições)
+
+async function carregarConfig(forcar) {
+  if (!CFG || forcar) {
+    const c = await GET('/config');
+    const lista = (v, pad) => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : pad; } catch (e) { return pad; } };
+    c.percentuais = lista(c.percentuais_padrao, [10, 12, 15, 20]);
+    c.formas = lista(c.formas_pagamento, ['Dinheiro', 'Pix', 'Transferência', 'Cartão', 'Outro']);
+    c.descricoes = lista(c.descricoes_padrao, ['Compra', 'Dívida', 'Produto', 'Serviço', 'Acordo', 'Outro']);
+    CFG = c;
+  }
+  return CFG;
+}
+const pode = p => { const u = Sessao.usuario; return !!(u && u.permissoes && u.permissoes[p]); };
+
+/* ── Linha de cobrança reutilizável ─────────────────────── */
+function linhaCobranca(p, opc = {}) {
+  const aberta = p.status === 'pendente' || p.status === 'parcial';
+  const ativa = !p.registro_status || p.registro_status === 'ativo';
+  const valor = p.status === 'parcial' ? p.valor - p.valor_pago : p.valor;
+  return `<div class="item">
+    <div style="min-width:0">
+      <div class="item-titulo"><a href="#/cliente/${p.client_id}" style="color:inherit;text-decoration:none">${esc(p.cliente)}</a></div>
+      <div class="item-sub"><span>${esc(p.descricao)} · ${p.numero}/${p.qtd_parcelas}</span><span>${dataBR(p.vencimento)}</span>${selo(p.situacao)}</div>
+    </div>
+    <div class="item-valor">${moeda(valor)}${p.status === 'parcial' ? `<div class="muted" style="font-size:12px;font-family:var(--f-texto);font-weight:500">de ${moeda(p.valor)}</div>` : ''}</div>
+    ${aberta && ativa && !opc.semAcoes ? `<div class="item-acoes">
+      ${pode('pagamentos') ? `<button class="btn btn-p btn-verde" onclick="receber(${p.id}, ${p.valor - p.valor_pago})">${I.ok} Receber</button>` : ''}
+      ${pode('whatsapp') ? `<button class="btn btn-p btn-zap" onclick="abrirZap(${p.id})">${I.zap} ${p.situacao.codigo === 'atrasado' ? 'Cobrar' : 'Lembrete'}</button>` : ''}
+    </div>` : ''}
+    ${p.status === 'pago' && opc.mostrarPago ? `<div class="item-acoes"><button class="btn btn-p btn-claro" onclick="verPagamentos(${p.id})">Ver pagamento</button></div>` : ''}
+  </div>`;
+}
+
+/* ── Registrar pagamento ─────────────────────────────────── */
+async function receber(id, restante) {
+  await carregarConfig();
+  const formas = CFG.formas;
+  const m = abrirModal({
+    titulo: 'Registrar pagamento',
+    subtitulo: 'Restante desta parcela: <b>' + moeda(restante) + '</b>',
+    corpo: `
+      <div class="campo"><label for="pg-valor">Valor pago</label><input class="entrada entrada-grande num" id="pg-valor" inputmode="decimal" value="${String(restante.toFixed(2)).replace('.', ',')}"></div>
+      <div class="campo"><label for="pg-data">Data do pagamento</label><input class="entrada" id="pg-data" type="date" value="${hojeISO()}"></div>
+      <div class="campo"><span class="rotulo">Forma de pagamento</span><div class="chips" id="pg-formas">${formas.map((f, i) => `<button type="button" class="chip${i === 0 ? ' sel' : ''}" data-v="${esc(f)}">${esc(f)}</button>`).join('')}</div></div>
+      <div class="campo"><label for="pg-obs">Observação (opcional)</label><input class="entrada" id="pg-obs" placeholder="Ex.: pagou no balcão"></div>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn btn-verde" id="pg-ok">' + I.ok + ' Confirmar pagamento</button>',
+  });
+  m.querySelectorAll('#pg-formas .chip').forEach(c => c.onclick = () => { m.querySelectorAll('#pg-formas .chip').forEach(x => x.classList.remove('sel')); c.classList.add('sel'); });
+  m.querySelector('#pg-ok').onclick = async () => {
+    const btn = m.querySelector('#pg-ok'); btn.disabled = true;
+    try {
+      const r = await POST('/parcelas/' + id + '/pagar', {
+        valor: lerMoeda(m.querySelector('#pg-valor').value), data: m.querySelector('#pg-data').value,
+        forma: (m.querySelector('#pg-formas .sel') || {}).dataset?.v || 'Dinheiro', observacao: m.querySelector('#pg-obs').value,
+      });
+      abrirModal({
+        titulo: r.quitada ? 'Parcela paga' : 'Pagamento parcial registrado',
+        corpo: `<p style="margin-top:0">${r.quitada ? 'A parcela foi marcada como paga.' : 'O valor foi abatido. A parcela continua em aberto com o restante.'}</p>
+                ${pode('whatsapp') ? '<p class="rotulo">Confirmação para o cliente</p><div class="previa">' + esc(r.confirmacao.texto) + '</div>' : ''}`,
+        rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>' +
+          (pode('whatsapp') ? `<a class="btn btn-zap" href="${esc(r.confirmacao.link)}" target="_blank" rel="noopener" onclick="setTimeout(fecharModal,300)">${I.zap} Enviar confirmação</a>` : ''),
+      });
+      toast('Pagamento registrado.', 'ok');
+      App.recarregar();
+    } catch (e) { falha(e); btn.disabled = false; }
+  };
+}
+
+/* ── WhatsApp com mensagem pronta ───────────────────────── */
+async function abrirZap(id, tipo) {
+  let r;
+  try { r = await GET('/parcelas/' + id + '/mensagem' + (tipo ? '?tipo=' + tipo : '')); } catch (e) { return falha(e); }
+  const tipos = { antecipado: 'Antecipado', hoje: 'Vence hoje', atraso: 'Em atraso', confirmacao: 'Pagamento' };
+  const m = abrirModal({
+    titulo: 'Mensagem de WhatsApp',
+    subtitulo: r.telefone ? 'Para +' + esc(r.telefone) : 'Cliente sem WhatsApp cadastrado: você vai escolher o contato no WhatsApp.',
+    corpo: `<div class="segmentos" id="zt">${Object.entries(tipos).map(([k, v]) => `<button type="button" data-t="${k}" class="${k === r.tipo ? 'sel' : ''}">${v}</button>`).join('')}</div>
+            <div class="campo mt"><label for="zt-txt">Texto (pode editar antes de enviar)</label><textarea class="entrada" id="zt-txt" rows="8">${esc(r.texto)}</textarea></div>`,
+    rodape: `<button class="btn btn-claro" data-fechar>Voltar</button><a class="btn btn-zap" id="zt-ir" href="${esc(r.link)}" target="_blank" rel="noopener">${I.zap} Abrir WhatsApp</a>`,
+  });
+  const txt = m.querySelector('#zt-txt'), ir = m.querySelector('#zt-ir');
+  let tipoAtual = r.tipo;
+  const atualizar = () => { ir.href = 'https://wa.me/' + (r.telefone || '') + '?text=' + encodeURIComponent(txt.value); };
+  txt.addEventListener('input', atualizar);
+  m.querySelectorAll('#zt button').forEach(b => b.onclick = async () => {
+    try {
+      const n = await GET('/parcelas/' + id + '/mensagem?tipo=' + b.dataset.t);
+      tipoAtual = n.tipo; txt.value = n.texto; atualizar();
+      m.querySelectorAll('#zt button').forEach(x => x.classList.toggle('sel', x === b));
+    } catch (e) { falha(e); }
+  });
+  ir.addEventListener('click', () => {
+    POST('/parcelas/' + id + '/lembrete-enviado', { tipo: tipoAtual, texto: txt.value }).catch(() => {});
+    setTimeout(() => { fecharModal(); App.recarregar(); }, 400);
+  });
+}
+
+/* ── Ajustar parcela / ver pagamentos ───────────────────── */
+function ajustarParcela(p) {
+  const m = abrirModal({
+    titulo: 'Ajustar parcela ' + p.numero,
+    corpo: `<div class="linha-campos">
+      <div class="campo"><label>Valor</label><input class="entrada num" id="aj-v" inputmode="decimal" value="${String(Number(p.valor).toFixed(2)).replace('.', ',')}"></div>
+      <div class="campo"><label>Vencimento</label><input class="entrada" id="aj-d" type="date" value="${p.vencimento}"></div></div>
+      ${p.valor_pago > 0 ? '<div class="aviso info">Já foi pago ' + moeda(p.valor_pago) + ' desta parcela.</div>' : ''}
+      <small class="muted">O total do registro é recalculado com o novo valor.</small>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="aj-ok">Salvar ajuste</button>',
+  });
+  m.querySelector('#aj-ok').onclick = async () => {
+    try {
+      await PUT('/parcelas/' + p.id, { valor: lerMoeda(m.querySelector('#aj-v').value), vencimento: m.querySelector('#aj-d').value });
+      fecharModal(); toast('Parcela ajustada.', 'ok'); App.recarregar();
+    } catch (e) { falha(e); }
+  };
+}
+
+async function verPagamentos(id) {
+  let lista;
+  try { lista = await GET('/parcelas/' + id + '/pagamentos'); } catch (e) { return falha(e); }
+  const m = abrirModal({
+    titulo: 'Pagamentos da parcela',
+    corpo: lista.length ? '<div class="lista">' + lista.map(pg => `<div class="item">
+        <div><div class="item-titulo">${moeda(pg.valor)} · ${esc(pg.forma)}</div>
+        <div class="item-sub">Pago em ${dataBR(pg.data_pagamento)} · registrado ${dataHora(pg.registrado_em)} por ${esc(pg.registrado_por_nome || '—')}</div>
+        ${pg.observacao ? '<div class="item-sub">' + esc(pg.observacao) + '</div>' : ''}</div>
+        ${pode('pagamentos') ? `<div><button class="btn btn-p btn-perigo" data-estornar="${pg.id}">Estornar</button></div>` : ''}</div>`).join('') + '</div>'
+      : '<div class="vazio">Nenhum pagamento nesta parcela.</div>',
+    rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>',
+  });
+  m.querySelectorAll('[data-estornar]').forEach(b => b.onclick = async () => {
+    const motivo = await pedirTexto('Estornar pagamento', 'Motivo do estorno', 'Estornar', true);
+    if (!motivo) return;
+    try { await DEL('/parcelas/pagamentos/' + b.dataset.estornar, { motivo }); toast('Pagamento estornado.', 'ok'); App.recarregar(); }
+    catch (e) { falha(e); }
+  });
+}
+
+async function maisParcela(p) {
+  const aberta = p.status === 'pendente' || p.status === 'parcial';
+  const m = abrirModal({
+    titulo: 'Parcela ' + p.numero + ' · ' + dataBR(p.vencimento),
+    corpo: `<div class="grade" style="gap:8px">
+      ${aberta && pode('registros') ? '<button class="btn btn-claro btn-grande" id="mp-aj">Ajustar valor ou data</button>' : ''}
+      <button class="btn btn-claro btn-grande" id="mp-pg">Ver pagamentos</button>
+      ${pode('whatsapp') ? '<button class="btn btn-claro btn-grande" id="mp-zap">' + I.zap + ' Mensagem de WhatsApp</button>' : ''}</div>`,
+  });
+  const on = (s, f) => { const b = m.querySelector(s); if (b) b.onclick = f; };
+  on('#mp-aj', () => ajustarParcela(p));
+  on('#mp-pg', () => verPagamentos(p.id));
+  on('#mp-zap', () => abrirZap(p.id));
+}
+
+/* ── Caderneta de parcelas (tabela pautada) ─────────────── */
+function caderneta(parcelas, opc = {}) {
+  window.__parc = window.__parc || {};
+  parcelas.forEach(p => { window.__parc[p.id] = p; });
+  const linhas = parcelas.map(p => {
+    const aberta = p.status === 'pendente' || p.status === 'parcial';
+    const cls = p.status === 'pago' ? 'paga' : p.status === 'cancelado' ? 'cancelada' : '';
+    return `<div class="caderneta-linha ${cls}">
+      <div class="n">${p.numero}</div>
+      <div class="c-venc num">${dataBR(p.vencimento)}</div>
+      <div class="c-valor v num forte">${moeda(p.valor)}${p.status === 'parcial' ? ` <small class="muted" style="font-weight:500">(falta ${moeda(p.valor - p.valor_pago)})</small>` : ''}</div>
+      <div class="c-status">${selo(p.situacao)}</div>
+      <div class="acoes-linha">
+        ${aberta && opc.ativo && pode('pagamentos') ? `<button class="btn btn-p btn-verde btn-icone" title="Registrar pagamento" onclick="receber(${p.id}, ${p.valor - p.valor_pago})">${I.ok}</button>` : ''}
+        ${aberta && opc.ativo && pode('whatsapp') ? `<button class="btn btn-p btn-zap btn-icone" title="Enviar WhatsApp" onclick="abrirZap(${p.id})">${I.zap}</button>` : ''}
+        <button class="btn btn-p btn-claro btn-icone" title="Mais opções" onclick="maisParcela(window.__parc[${p.id}])">⋯</button>
+      </div></div>`;
+  }).join('');
+  const pago = parcelas.reduce((s, p) => s + p.valor_pago, 0);
+  const total = parcelas.filter(p => p.status !== 'cancelado').reduce((s, p) => s + p.valor, 0);
+  return `<div class="caderneta"><div class="caderneta-cab"><div class="n">Nº</div><div>Vencimento</div><div class="so-largo">Valor</div><div class="so-largo">Situação</div><div class="so-largo"></div></div>
+    <div class="caderneta-rolagem">${linhas}</div>
+    <div class="caderneta-rodape"><span>Pago ${moeda(pago)}</span><span>Total ${moeda(total)}</span></div></div>`;
+}
+
+/* ═══════════════════ INÍCIO ═══════════════════ */
+Admin.inicio = async el => {
+  carregando(el);
+  const d = await GET('/dashboard');
+  const c = d.cards, u = Sessao.usuario;
+  const dataExt = new Date(d.hoje + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+  el.innerHTML = `
+    <div class="topo"><div><h1>Olá, ${esc((u.nome || '').split(' ')[0])}</h1><p>${dataExt}</p></div>
+      ${pode('registros') ? `<a class="btn so-desktop" href="#/novo">${I.mais} Novo registro</a>` : ''}</div>
+    <div class="faixa-hoje">
+      <div><span>Para receber hoje</span><strong>${moeda(c.vence_hoje)}</strong><small>${c.qtd_hoje} ${c.qtd_hoje === 1 ? 'parcela' : 'parcelas'}</small></div>
+      <div class="secundario"><span>Em atraso</span><strong>${moeda(c.total_atrasado)}</strong><small>${c.qtd_atrasadas} ${c.qtd_atrasadas === 1 ? 'parcela' : 'parcelas'}</small></div>
+      <div class="secundario"><span>Recebido hoje</span><strong>${moeda(c.recebido_hoje)}</strong></div>
+    </div>
+    <div class="grade grade-3">
+      <div class="indicador"><span>Clientes</span><strong>${c.clientes}</strong></div>
+      <div class="indicador"><span>Total registrado</span><strong>${moeda(c.total_registrado)}</strong></div>
+      <div class="indicador"><span>A receber</span><strong>${moeda(c.total_a_receber)}</strong></div>
+      <div class="indicador bom"><span>Total recebido</span><strong>${moeda(c.total_recebido)}</strong></div>
+      <div class="indicador"><span>Vence amanhã</span><strong>${moeda(c.vence_amanha)}</strong><small>${c.qtd_amanha} parcela(s)</small></div>
+      <div class="indicador"><span>Próximos 7 dias</span><strong>${moeda(c.proximos_7)}</strong><small>${c.qtd_proximos_7} parcela(s)</small></div>
+    </div>
+    ${d.lembretes.length && pode('whatsapp') ? `<div class="painel mt"><div class="painel-topo"><h2>Lembretes para enviar</h2><small>${d.lembretes.length} pendente(s)</small></div>
+      <div class="lista">${d.lembretes.map(l => `<div class="item"><div style="min-width:0"><div class="item-titulo">${esc(l.cliente)}</div>
+        <div class="item-sub"><span>${esc(l.descricao)}</span><span>${{ antecipado: 'Lembrete antecipado', hoje: 'Vence hoje', atraso: 'Em atraso' }[l.tipo] || l.tipo}</span><span>venc. ${dataBR(l.vencimento)}</span></div></div>
+        <div class="item-valor">${moeda(l.valor - l.valor_pago)}</div>
+        <div class="item-acoes"><a class="btn btn-p btn-zap" href="${esc(l.link)}" target="_blank" rel="noopener" data-lemb="${l.id}">${I.zap} Enviar</a>
+        <button class="btn btn-p btn-claro" data-ign="${l.id}">Dispensar</button></div></div>`).join('')}</div></div>` : ''}
+    <div class="grade grade-2 mt">
+      <div class="painel"><div class="painel-topo"><h2>Próximas cobranças</h2><a href="#/cobrancas?aba=proximas">Ver todas</a></div>
+        <div class="lista">${d.proximas.length ? d.proximas.map(p => linhaCobranca(p)).join('') : '<div class="vazio">Nenhuma cobrança por vir.</div>'}</div></div>
+      <div class="painel"><div class="painel-topo"><h2>Em atraso</h2><a href="#/cobrancas?aba=atrasadas">Ver todas</a></div>
+        <div class="lista">${d.atrasadas.length ? d.atrasadas.map(p => linhaCobranca(p)).join('') : '<div class="vazio">Nenhuma parcela em atraso.</div>'}</div></div>
+    </div>`;
+  el.querySelectorAll('[data-lemb]').forEach(a => a.addEventListener('click', () => {
+    POST('/lembretes/' + a.dataset.lemb + '/enviado').then(() => setTimeout(() => App.recarregar(), 500)).catch(() => {});
+  }));
+  el.querySelectorAll('[data-ign]').forEach(b => b.onclick = async () => {
+    try { await POST('/lembretes/' + b.dataset.ign + '/ignorar'); App.recarregar(); } catch (e) { falha(e); }
+  });
+};
+
+/* ═══════════════════ COBRANÇAS ═══════════════════ */
+Admin.cobrancas = async el => {
+  await carregarConfig();
+  const q = parametros();
+  const estado = { aba: q.aba || 'hoje', q: '', de: '', ate: '', status: '', descricao: '', forma: '' };
+  const abas = { todas: 'Todas', hoje: 'Hoje', amanha: 'Amanhã', proximas: 'Próximas', atrasadas: 'Atrasadas', pagas: 'Pagas' };
+  el.innerHTML = `
+    <div class="topo"><div><h1>Cobranças</h1><p id="cb-resumo">&nbsp;</p></div></div>
+    <div class="abas" id="cb-abas">${Object.entries(abas).map(([k, v]) => `<button data-a="${k}" class="${k === estado.aba ? 'sel' : ''}">${v}</button>`).join('')}</div>
+    <div class="painel">
+      <div style="display:flex;gap:8px"><div class="busca" style="flex:1">${I.busca}<input class="entrada" id="cb-q" placeholder="Buscar cliente, descrição ou telefone"></div>
+        <button class="btn btn-claro" id="cb-fbtn">Filtros</button></div>
+      <div class="filtros" id="cb-filtros" hidden>
+        <div class="campo"><label>Vencimento de</label><input class="entrada" type="date" id="cb-de"></div>
+        <div class="campo"><label>Até</label><input class="entrada" type="date" id="cb-ate"></div>
+        <div class="campo"><label>Situação</label><select class="entrada" id="cb-status"><option value="">Todas</option><option value="futuro">Vencimento futuro</option><option value="hoje">Vence hoje</option><option value="atrasado">Atrasado</option><option value="parcial">Parcialmente pago</option><option value="pago">Pago</option><option value="cancelado">Cancelado</option></select></div>
+        <div class="campo"><label>Descrição</label><input class="entrada" id="cb-desc" placeholder="Ex.: Compra"></div>
+        <div class="campo"><label>Forma de pagamento</label><select class="entrada" id="cb-forma"><option value="">Todas</option>${CFG.formas.map(f => `<option>${esc(f)}</option>`).join('')}</select></div>
+      </div>
+      <div class="lista mt" id="cb-lista"></div>
+    </div>`;
+  const $ = s => el.querySelector(s);
+  const buscar = async () => {
+    const p = new URLSearchParams({ aba: estado.aba });
+    ['q', 'de', 'ate', 'status', 'descricao', 'forma'].forEach(k => { if (estado[k]) p.set(k, estado[k]); });
+    carregando($('#cb-lista'));
+    try {
+      const r = await GET('/parcelas?' + p);
+      $('#cb-resumo').textContent = r.quantidade + (r.quantidade === 1 ? ' parcela · ' : ' parcelas · ') + moeda(r.total);
+      const vazio = { hoje: 'Nada vence hoje.', amanha: 'Nada vence amanhã.', atrasadas: 'Nenhuma parcela em atraso.', pagas: 'Nenhuma parcela paga encontrada.' }[estado.aba] || 'Nenhuma parcela encontrada.';
+      $('#cb-lista').innerHTML = r.parcelas.length ? r.parcelas.map(x => linhaCobranca(x, { mostrarPago: true })).join('') : `<div class="vazio">${vazio}</div>`;
+    } catch (e) { falha(e); }
+  };
+  el.querySelectorAll('#cb-abas button').forEach(b => b.onclick = () => {
+    estado.aba = b.dataset.a;
+    el.querySelectorAll('#cb-abas button').forEach(x => x.classList.toggle('sel', x === b));
+    history.replaceState(null, '', '#/cobrancas?aba=' + estado.aba);
+    buscar();
+  });
+  const abaSel = el.querySelector('#cb-abas .sel');
+  if (abaSel) abaSel.parentElement.scrollLeft = abaSel.offsetLeft - 16;
+  $('#cb-fbtn').onclick = () => { $('#cb-filtros').hidden = !$('#cb-filtros').hidden; };
+  $('#cb-q').addEventListener('input', debounce(e => { estado.q = e.target.value.trim(); buscar(); }, 300));
+  [['#cb-de', 'de'], ['#cb-ate', 'ate'], ['#cb-status', 'status'], ['#cb-forma', 'forma']].forEach(([s, k]) => $(s).addEventListener('change', e => { estado[k] = e.target.value; buscar(); }));
+  $('#cb-desc').addEventListener('input', debounce(e => { estado.descricao = e.target.value.trim(); buscar(); }, 350));
+  buscar();
+};
+
+/* ═══════════════════ CLIENTES ═══════════════════ */
+function formCliente(c = {}) {
+  return `<div class="campo"><label>Nome completo *</label><input class="entrada" name="nome" value="${esc(c.nome)}" autocomplete="off"></div>
+    <div class="linha-campos">
+      <div class="campo"><label>WhatsApp</label><input class="entrada" name="whatsapp" inputmode="tel" placeholder="(88) 99999-0000" value="${esc(c.whatsapp)}"></div>
+      <div class="campo"><label>Telefone</label><input class="entrada" name="telefone" inputmode="tel" value="${esc(c.telefone)}"></div></div>
+    <div class="campo"><label>CPF/CNPJ</label><input class="entrada" name="documento" inputmode="numeric" value="${esc(c.documento)}"></div>
+    <div class="linha-campos">
+      <div class="campo"><label>Endereço</label><input class="entrada" name="endereco" value="${esc(c.endereco)}"></div>
+      <div class="campo"><label>Cidade</label><input class="entrada" name="cidade" value="${esc(c.cidade)}"></div></div>
+    <div class="campo"><label>Observações</label><textarea class="entrada" name="observacoes" rows="3">${esc(c.observacoes)}</textarea></div>`;
+}
+
+function modalCliente(c, aoSalvar) {
+  const m = abrirModal({
+    titulo: c && c.id ? 'Editar cliente' : 'Novo cliente', corpo: formCliente(c || {}),
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="cl-ok">Salvar cliente</button>',
+  });
+  m.querySelector('#cl-ok').onclick = async () => {
+    const dados = formDados(m);
+    try {
+      const r = c && c.id ? await PUT('/clientes/' + c.id, dados) : await POST('/clientes', dados);
+      fecharModal(); toast('Cliente salvo.', 'ok');
+      aoSalvar && aoSalvar(c && c.id ? c.id : r.id, dados);
+    } catch (e) { falha(e); }
+  };
+}
+
+Admin.clientes = async el => {
+  el.innerHTML = `<div class="topo"><div><h1>Clientes</h1><p id="cl-qtd">&nbsp;</p></div>
+      ${pode('clientes') ? `<button class="btn" id="cl-novo">${I.mais} Novo cliente</button>` : ''}</div>
+    <div class="painel"><div class="busca">${I.busca}<input class="entrada" id="cl-q" placeholder="Buscar por nome, CPF, telefone ou cidade"></div>
+    <div class="lista mt" id="cl-lista"></div></div>`;
+  const lista = el.querySelector('#cl-lista');
+  const buscar = async q => {
+    carregando(lista);
+    try {
+      const r = await GET('/clientes' + (q ? '?q=' + encodeURIComponent(q) : ''));
+      el.querySelector('#cl-qtd').textContent = r.length + (r.length === 1 ? ' cliente' : ' clientes');
+      lista.innerHTML = r.length ? r.map(c => `<div class="item clicavel" onclick="location.hash='#/cliente/${c.id}'">
+        <div style="min-width:0"><div class="item-titulo">${esc(c.nome)}</div>
+        <div class="item-sub">${c.whatsapp ? '<span>' + esc(c.whatsapp) + '</span>' : ''}${c.cidade ? '<span>' + esc(c.cidade) + '</span>' : ''}<span>${c.registros_ativos} ativo(s)</span>
+        ${c.atrasado > 0 ? '<span class="selo s-atrasado">Atraso ' + moeda(c.atrasado) + '</span>' : ''}</div></div>
+        <div class="item-valor">${c.pendente > 0 ? moeda(c.pendente) : '<span class="muted" style="font-size:14px;font-weight:500">Em dia</span>'}</div></div>`).join('')
+        : `<div class="vazio">${q ? 'Nenhum cliente encontrado.' : 'Você ainda não cadastrou clientes.'}${!q && pode('clientes') ? '<br><button class="btn" onclick="document.getElementById(\'cl-novo\').click()">Cadastrar o primeiro cliente</button>' : ''}</div>`;
+    } catch (e) { falha(e); }
+  };
+  const nb = el.querySelector('#cl-novo');
+  if (nb) nb.onclick = () => modalCliente(null, id => { location.hash = '#/cliente/' + id; });
+  el.querySelector('#cl-q').addEventListener('input', debounce(e => buscar(e.target.value.trim()), 300));
+  buscar('');
+};
+
+Admin.cliente = async (el, id) => {
+  carregando(el);
+  const d = await GET('/clientes/' + id);
+  const c = d.cliente, r = d.resumo;
+  const fone = c.whatsapp || c.telefone;
+  const selReg = s => ({ ativo: '<span class="selo s-futuro">Ativo</span>', quitado: '<span class="selo s-pago">Quitado</span>', cancelado: '<span class="selo s-cancelado">Cancelado</span>' }[s]);
+  el.innerHTML = `
+    <button class="voltar" onclick="history.length>1?history.back():location.hash='#/clientes'">${I.voltar} Clientes</button>
+    <div class="topo"><div><h1>${esc(c.nome)}</h1>
+      <div class="contato">${fone ? `<a href="https://wa.me/${esc(String(fone).replace(/\D/g, '').replace(/^(?!55)(\d{10,11})$/, '55$1'))}" target="_blank" rel="noopener">${esc(fone)}</a>` : '<span>Sem WhatsApp</span>'}
+        ${c.documento ? '<span>' + esc(c.documento) + '</span>' : ''}${c.cidade ? '<span>' + esc(c.cidade) + '</span>' : ''}${c.endereco ? '<span>' + esc(c.endereco) + '</span>' : ''}</div></div>
+      <div class="acoes">${pode('registros') ? `<a class="btn" href="#/novo?cliente=${c.id}">${I.mais} Novo registro</a>` : ''}
+        ${pode('clientes') ? '<button class="btn btn-claro" id="cl-ed">Editar</button><button class="btn btn-perigo" id="cl-ex">Excluir</button>' : ''}</div></div>
+    ${c.observacoes ? '<div class="aviso info">' + esc(c.observacoes) + '</div>' : ''}
+    <div class="grade grade-4">
+      <div class="indicador bom"><span>Total já pago</span><strong>${moeda(r.total_pago)}</strong><small>${r.parcelas_pagas} parcela(s) paga(s)</small></div>
+      <div class="indicador"><span>Total pendente</span><strong>${moeda(r.total_pendente)}</strong><small>${r.parcelas_pendentes} parcela(s)</small></div>
+      <div class="indicador ${r.parcelas_atrasadas ? 'alerta' : ''}"><span>Em atraso</span><strong>${moeda(r.total_atrasado)}</strong><small>${r.parcelas_atrasadas} parcela(s)</small></div>
+      <div class="indicador"><span>Registros ativos</span><strong>${r.registros_ativos}</strong><small>${d.registros.length} no total</small></div>
+    </div>
+    <h2 class="mt" style="margin-bottom:10px">Histórico financeiro</h2>
+    ${d.registros.length ? d.registros.map(reg => {
+      window.__reg = window.__reg || {}; window.__reg[reg.id] = reg;
+      const pago = reg.parcelas.reduce((s, p) => s + p.valor_pago, 0);
+      const pctPago = reg.total > 0 ? Math.min(100, pago / reg.total * 100) : 0;
+      return `<div class="painel bloco">
+        <div class="painel-topo" style="align-items:flex-start"><div><h3>${esc(reg.descricao)}</h3>
+          <div class="item-sub" style="margin-top:4px"><span>${FREQ[reg.frequencia]}</span><span>${reg.qtd_parcelas}x</span><span>desde ${dataHora(reg.criado_em).slice(0, 8)}</span>${selReg(reg.status)}</div></div>
+          <div class="direita"><div class="item-valor">${moeda(reg.total)}</div><small class="muted">${moeda(reg.valor_principal)} + ${pct(reg.percentual)}</small></div></div>
+        <div class="progresso"><i style="width:${pctPago.toFixed(1)}%"></i></div>
+        <div class="item-sub" style="margin:6px 0 12px"><span>Pago ${moeda(pago)}</span><span>Falta ${moeda(Math.max(0, reg.total - pago))}</span></div>
+        <details ${reg.status === 'ativo' ? 'open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Parcelas</summary>
+          ${caderneta(reg.parcelas, { ativo: reg.status === 'ativo' })}</details>
+        ${reg.observacoes ? '<p class="muted" style="margin:10px 0 0">' + esc(reg.observacoes) + '</p>' : ''}
+        <div class="acoes mt">
+          <button class="btn btn-p btn-claro" onclick="historicoRegistro(${reg.id})">${I.hist} Histórico</button>
+          ${pode('registros') ? `<button class="btn btn-p btn-claro" onclick="editarRegistro(${reg.id})">Editar descrição</button>` : ''}
+          ${reg.status === 'ativo' && pode('registros') ? `<button class="btn btn-p btn-perigo" onclick="cancelarRegistro(${reg.id})">Cancelar registro</button>` : ''}
+        </div></div>`;
+    }).join('') : `<div class="painel vazio">Nenhum registro para este cliente.${pode('registros') ? `<br><a class="btn" href="#/novo?cliente=${c.id}">Criar registro</a>` : ''}</div>`}
+    ${d.pagamentos.length ? `<div class="painel mt"><h2 style="margin-bottom:8px">Pagamentos recebidos</h2><div class="tabela-wrap"><table class="tabela">
+      <tr><th>Data</th><th>Referente a</th><th>Forma</th><th class="dir">Valor</th></tr>
+      ${d.pagamentos.map(p => `<tr><td>${dataBR(p.data_pagamento)}</td><td>${esc(p.descricao)} · parcela ${p.numero}</td><td>${esc(p.forma)}</td><td class="dir forte">${moeda(p.valor)}</td></tr>`).join('')}
+    </table></div></div>` : ''}`;
+  const ed = el.querySelector('#cl-ed');
+  if (ed) ed.onclick = () => modalCliente(c, () => App.recarregar());
+  const ex = el.querySelector('#cl-ex');
+  if (ex) ex.onclick = async () => {
+    if (!await confirmar('Excluir cliente', 'Excluir <b>' + esc(c.nome) + '</b> e todo o histórico dele? Esta ação não pode ser desfeita.', 'Excluir', true)) return;
+    try { await DEL('/clientes/' + c.id); toast('Cliente excluído.', 'ok'); location.hash = '#/clientes'; } catch (e) { falha(e); }
+  };
+};
+
+async function cancelarRegistro(id) {
+  const motivo = await pedirTexto('Cancelar registro', 'Motivo do cancelamento', 'Cancelar registro', true);
+  if (!motivo) return;
+  try { await POST('/registros/' + id + '/cancelar', { motivo }); toast('Registro cancelado.', 'ok'); App.recarregar(); } catch (e) { falha(e); }
+}
+function editarRegistro(id) {
+  const reg = (window.__reg || {})[id] || {};
+  const desc = reg.descricao || '', obs = reg.observacoes || '';
+  const m = abrirModal({
+    titulo: 'Editar registro',
+    corpo: `<div class="campo"><label>Descrição</label><input class="entrada" id="er-d" value="${esc(desc)}"></div>
+            <div class="campo"><label>Observações</label><textarea class="entrada" id="er-o" rows="3">${esc(obs)}</textarea></div>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="er-ok">Salvar</button>',
+  });
+  m.querySelector('#er-ok').onclick = async () => {
+    try { await PUT('/registros/' + id, { descricao: m.querySelector('#er-d').value, observacoes: m.querySelector('#er-o').value }); fecharModal(); toast('Registro atualizado.', 'ok'); App.recarregar(); }
+    catch (e) { falha(e); }
+  };
+}
+const NOMES_ACAO = {
+  registro_criado: 'Registro criado', registro_editado: 'Registro editado', registro_cancelado: 'Registro cancelado',
+  parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
+};
+async function historicoRegistro(id) {
+  try {
+    const r = await GET('/registros/' + id);
+    abrirModal({
+      titulo: 'Histórico do registro', subtitulo: esc(r.descricao), largo: true,
+      corpo: r.historico.length ? '<div class="lista">' + r.historico.map(h => {
+        let d = {}; try { d = JSON.parse(h.detalhes || '{}'); } catch (e) {}
+        const extra = d.valor && typeof d.valor === 'object' ? 'Parcela ' + d.parcela + ': ' + moeda(d.valor.de) + ' → ' + moeda(d.valor.para) + (d.vencimento && d.vencimento.de !== d.vencimento.para ? ', ' + dataBR(d.vencimento.de) + ' → ' + dataBR(d.vencimento.para) : '')
+          : d.parcela ? 'Parcela ' + d.parcela + ' · ' + moeda(d.valor) + (d.forma ? ' · ' + d.forma : '') : d.total ? moeda(d.total) + (d.parcelas ? ' em ' + d.parcelas + 'x' : '') : '';
+        return `<div class="item"><div><div class="item-titulo">${NOMES_ACAO[h.acao] || esc(h.acao)}</div>
+          <div class="item-sub"><span>${dataHora(h.criado_em)}</span><span>por ${esc(h.user_nome || '—')}</span>${extra ? '<span>' + esc(extra) + '</span>' : ''}${d.motivo ? '<span>Motivo: ' + esc(d.motivo) + '</span>' : ''}</div></div></div>`;
+      }).join('') + '</div>' : '<div class="vazio">Sem histórico.</div>',
+      rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>',
+    });
+  } catch (e) { falha(e); }
+}
+
+/* ═══════════════════ NOVO REGISTRO ═══════════════════ */
+Admin.novo = async el => {
+  await carregarConfig();
+  const q = parametros();
+  const amanha = somaDias(hojeISO(), 1);
+  const st = {
+    cliente: null, descricao: '', valor: 0, percentual: CFG.percentuais[1] ?? CFG.percentuais[0] ?? 0,
+    frequencia: 'mensal', modo: 'qtd', qtd: 4, valor_parcela: 0,
+    data_inicial: '', dia_semana: new Date(amanha + 'T12:00:00').getDay(), dia_mes: Number(hojeISO().slice(8, 10)),
+    intervalo_dias: 10, pular_domingos: false, sim: null, parcelas: null, editado: false,
+  };
+  if (q.cliente) { try { const d = await GET('/clientes/' + q.cliente); st.cliente = { id: d.cliente.id, nome: d.cliente.nome }; } catch (e) {} }
+
+  el.innerHTML = `
+    <button class="voltar" onclick="history.back()">${I.voltar} Voltar</button>
+    <div class="topo"><div><h1>Novo registro</h1><p>Preencha e confira as parcelas antes de salvar.</p></div></div>
+    <div class="novo-layout">
+      <div class="painel" style="padding-top:4px">
+        <div class="passo"><div class="passo-n">1</div><div><h3>Cliente</h3>
+          <div id="nr-cli"></div></div></div>
+        <div class="passo"><div class="passo-n">2</div><div><h3>Descrição</h3>
+          <div class="chips" id="nr-descs">${CFG.descricoes.map(d => `<button type="button" class="chip" data-v="${esc(d)}">${esc(d)}</button>`).join('')}</div>
+          <input class="entrada mt" id="nr-desc" placeholder="Ex.: Compra de geladeira" maxlength="120"></div></div>
+        <div class="passo"><div class="passo-n">3</div><div><h3>Valor e percentual</h3>
+          <div class="campo"><label for="nr-valor">Valor principal</label><input class="entrada entrada-grande num" id="nr-valor" inputmode="decimal" placeholder="R$ 0,00"></div>
+          <span class="rotulo">Percentual</span>
+          <div class="chips" id="nr-pcts" style="margin-top:6px">${CFG.percentuais.map(p => `<button type="button" class="chip" data-v="${p}">${pct(p)}</button>`).join('')}
+            <button type="button" class="chip" data-v="0">Sem acréscimo</button><button type="button" class="chip" data-v="outro">Outro</button></div>
+          <input class="entrada mt" id="nr-pct-outro" inputmode="decimal" placeholder="Percentual, ex.: 12,5" hidden></div></div>
+        <div class="passo"><div class="passo-n">4</div><div><h3>Como vai pagar</h3>
+          <div class="segmentos" id="nr-freq">${Object.entries(FREQ).map(([k, v]) => `<button type="button" data-v="${k}">${v}</button>`).join('')}</div>
+          <div id="nr-freq-campos" class="mt"></div>
+          <div class="segmentos mt" id="nr-modo"><button type="button" data-v="qtd">Nº de parcelas</button><button type="button" data-v="valor">Valor da parcela</button></div>
+          <div class="campo mt" id="nr-modo-campo"></div></div></div>
+        <div class="passo"><div class="passo-n">5</div><div><h3>Observações <small class="muted" style="font-weight:500">(opcional)</small></h3>
+          <textarea class="entrada" id="nr-obs" rows="2" placeholder="Anotações internas"></textarea></div></div>
+      </div>
+      <div class="fixo">
+        <div class="painel"><h2 style="margin-bottom:8px">Resumo</h2><div id="nr-resumo"><p class="muted">Informe o valor para ver o cálculo.</p></div></div>
+        <div class="mt" id="nr-parcelas"></div>
+        <button class="btn btn-grande mt" id="nr-salvar" disabled>${I.ok} Criar registro</button>
+      </div>
+    </div>`;
+  const $ = s => el.querySelector(s);
+
+  // Cliente: busca com sugestões + cadastro rápido
+  const desenharCliente = () => {
+    const box = $('#nr-cli');
+    if (st.cliente) {
+      box.innerHTML = `<div class="item" style="border:1px solid var(--linha);border-radius:var(--r-sm);padding:10px 12px">
+        <div class="item-titulo">${esc(st.cliente.nome)}</div><div><button class="link-btn" id="nr-cli-trocar">Trocar</button></div></div>`;
+      $('#nr-cli-trocar').onclick = () => { st.cliente = null; desenharCliente(); validar(); };
+      return;
+    }
+    box.innerHTML = `<div class="busca" style="position:relative">${I.busca}<input class="entrada" id="nr-cli-q" placeholder="Digite o nome do cliente" autocomplete="off"><div class="sugestoes" id="nr-cli-sug" hidden></div></div>
+      ${pode('clientes') ? '<button type="button" class="link-btn" id="nr-cli-novo">+ Cadastrar novo cliente</button>' : ''}`;
+    const inp = $('#nr-cli-q'), sug = $('#nr-cli-sug');
+    const buscar = debounce(async () => {
+      const t = inp.value.trim();
+      try {
+        const r = await GET('/clientes' + (t ? '?q=' + encodeURIComponent(t) : ''));
+        sug.innerHTML = r.slice(0, 8).map(c => `<button type="button" data-id="${c.id}" data-n="${esc(c.nome)}"><b>${esc(c.nome)}</b> <span class="muted">${esc(c.whatsapp || '')}</span></button>`).join('')
+          || '<div class="vazio" style="padding:12px">Nenhum cliente com esse nome.</div>';
+        sug.hidden = false;
+        sug.querySelectorAll('button').forEach(b => b.onclick = () => { st.cliente = { id: Number(b.dataset.id), nome: b.dataset.n }; desenharCliente(); validar(); });
+      } catch (e) { falha(e); }
+    }, 200);
+    inp.addEventListener('input', buscar);
+    inp.addEventListener('focus', buscar);
+    document.addEventListener('click', e => { if (!box.contains(e.target)) sug.hidden = true; }, { once: false });
+    const nv = $('#nr-cli-novo');
+    if (nv) nv.onclick = () => modalCliente({ nome: inp.value.trim() }, (id, dados) => { st.cliente = { id, nome: dados.nome }; desenharCliente(); validar(); });
+  };
+  desenharCliente();
+
+  // Descrição
+  $('#nr-descs').querySelectorAll('.chip').forEach(c => c.onclick = () => {
+    $('#nr-descs').querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === c));
+    $('#nr-desc').value = c.dataset.v; st.descricao = c.dataset.v; $('#nr-desc').focus(); validar();
+  });
+  $('#nr-desc').addEventListener('input', e => {
+    st.descricao = e.target.value.trim();
+    $('#nr-descs').querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x.dataset.v === st.descricao));
+    validar();
+  });
+
+  // Valor e percentual
+  $('#nr-valor').addEventListener('input', e => { st.valor = lerMoeda(e.target.value); simular(); });
+  $('#nr-valor').addEventListener('blur', e => { if (st.valor) e.target.value = moeda(st.valor).replace('R$ ', ''); });
+  const marcarPct = () => {
+    const outro = !CFG.percentuais.map(Number).includes(Number(st.percentual)) && Number(st.percentual) !== 0;
+    $('#nr-pcts').querySelectorAll('.chip').forEach(c => c.classList.toggle('sel', c.dataset.v === 'outro' ? outro : Number(c.dataset.v) === Number(st.percentual)));
+  };
+  $('#nr-pcts').querySelectorAll('.chip').forEach(c => c.onclick = () => {
+    if (c.dataset.v === 'outro') { $('#nr-pct-outro').hidden = false; $('#nr-pct-outro').focus(); $('#nr-pcts').querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === c)); return; }
+    $('#nr-pct-outro').hidden = true; st.percentual = Number(c.dataset.v); marcarPct(); simular();
+  });
+  $('#nr-pct-outro').addEventListener('input', e => { st.percentual = lerNumero(e.target.value); simular(); });
+  marcarPct();
+
+  // Frequência
+  const camposFreq = () => {
+    const f = st.frequencia, box = $('#nr-freq-campos');
+    const dataIni = (rot, pad) => `<div class="campo"><label>${rot}</label><input class="entrada" type="date" id="nr-dini" value="${st.data_inicial || pad}"></div>`;
+    if (f === 'diario') box.innerHTML = dataIni('Primeiro pagamento', amanha) + `<label class="check"><input type="checkbox" id="nr-dom" ${st.pular_domingos ? 'checked' : ''}> Não cobrar aos domingos</label>`;
+    if (f === 'semanal') box.innerHTML = `<div class="campo"><label>Dia da semana</label><select class="entrada" id="nr-dsem">${SEMANA.map((d, i) => `<option value="${i}" ${i === Number(st.dia_semana) ? 'selected' : ''}>${d}</option>`).join('')}</select></div>`;
+    if (f === 'quinzenal') box.innerHTML = dataIni('Primeiro vencimento', somaDias(hojeISO(), 15));
+    if (f === 'mensal') box.innerHTML = `<div class="campo"><label>Dia do vencimento</label><input class="entrada num" id="nr-dmes" type="number" min="1" max="31" inputmode="numeric" value="${st.dia_mes}"><small>Todo dia ${st.dia_mes} de cada mês. Em meses mais curtos, vence no último dia.</small></div>`;
+    if (f === 'personalizado') box.innerHTML = `<div class="linha-campos"><div class="campo"><label>A cada quantos dias</label><input class="entrada num" id="nr-int" type="number" min="1" max="365" value="${st.intervalo_dias}"></div>` + dataIni('Primeiro vencimento', somaDias(hojeISO(), Number(st.intervalo_dias) || 1)) + '</div>';
+    const on = (s, ev, fn) => { const x = $(s); if (x) x.addEventListener(ev, fn); };
+    on('#nr-dini', 'change', e => { st.data_inicial = e.target.value; simular(); });
+    on('#nr-dom', 'change', e => { st.pular_domingos = e.target.checked; simular(); });
+    on('#nr-dsem', 'change', e => { st.dia_semana = Number(e.target.value); simular(); });
+    on('#nr-dmes', 'input', e => { st.dia_mes = Number(e.target.value); const s = e.target.parentElement.querySelector('small'); if (s) s.textContent = 'Todo dia ' + (st.dia_mes || '?') + ' de cada mês. Em meses mais curtos, vence no último dia.'; simular(); });
+    on('#nr-int', 'input', e => { st.intervalo_dias = Number(e.target.value); simular(); });
+  };
+  $('#nr-freq').querySelectorAll('button').forEach(b => b.onclick = () => {
+    st.frequencia = b.dataset.v; st.data_inicial = '';
+    if (st.frequencia === 'diario' && st.modo === 'qtd' && st.qtd === 4) st.qtd = 30;
+    if (st.frequencia !== 'diario' && st.modo === 'qtd' && st.qtd === 30) st.qtd = 4;
+    $('#nr-freq').querySelectorAll('button').forEach(x => x.classList.toggle('sel', x === b));
+    camposFreq(); campoModo(); simular();
+  });
+  const campoModo = () => {
+    $('#nr-modo').querySelectorAll('button').forEach(x => x.classList.toggle('sel', x.dataset.v === st.modo));
+    $('#nr-modo-campo').innerHTML = st.modo === 'qtd'
+      ? `<label>Quantidade de parcelas</label><input class="entrada num" id="nr-qtd" type="number" min="1" max="1000" inputmode="numeric" value="${st.qtd}">`
+      : `<label>Valor de cada parcela</label><input class="entrada num" id="nr-vp" inputmode="decimal" placeholder="Ex.: 40,00" value="${st.valor_parcela ? String(st.valor_parcela).replace('.', ',') : ''}"><small>O sistema calcula quantas parcelas são necessárias.</small>`;
+    const qi = $('#nr-qtd'); if (qi) qi.addEventListener('input', e => { st.qtd = Math.floor(Number(e.target.value)) || 0; simular(); });
+    const vi = $('#nr-vp'); if (vi) vi.addEventListener('input', e => { st.valor_parcela = lerMoeda(e.target.value); simular(); });
+  };
+  $('#nr-modo').querySelectorAll('button').forEach(b => b.onclick = () => { st.modo = b.dataset.v; campoModo(); simular(); });
+  $('#nr-freq').querySelector('[data-v="mensal"]').classList.add('sel');
+  camposFreq(); campoModo();
+
+  // Simulação no servidor (mesma regra usada ao salvar)
+  const corpo = () => ({
+    valor_principal: st.valor, percentual: st.percentual, frequencia: st.frequencia,
+    qtd_parcelas: st.modo === 'qtd' ? st.qtd : 0, valor_parcela: st.modo === 'valor' ? st.valor_parcela : 0,
+    data_inicial: ['diario', 'quinzenal', 'personalizado'].includes(st.frequencia) ? (st.data_inicial || ($('#nr-dini') || {}).value || '') : '',
+    dia_semana: st.dia_semana, dia_mes: st.dia_mes, intervalo_dias: st.intervalo_dias, pular_domingos: st.pular_domingos,
+  });
+  let seq = 0;
+  const simular = debounce(async () => {
+    st.sim = null; st.parcelas = null; st.editado = false;
+    if (!st.valor) { $('#nr-resumo').innerHTML = '<p class="muted">Informe o valor para ver o cálculo.</p>'; $('#nr-parcelas').innerHTML = ''; validar(); return; }
+    const meu = ++seq;
+    try {
+      const s = await POST('/registros/simular', corpo());
+      if (meu !== seq) return;
+      st.sim = s; st.parcelas = s.parcelas.map(p => ({ ...p }));
+      desenharResumo(); desenharParcelas();
+    } catch (e) {
+      if (meu !== seq) return;
+      $('#nr-resumo').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>'; $('#nr-parcelas').innerHTML = '';
+    }
+    validar();
+  }, 250);
+
+  const desenharResumo = () => {
+    const s = st.sim, soma = st.parcelas.reduce((t, p) => t + p.valor, 0);
+    const iguais = st.parcelas.every(p => Math.abs(p.valor - st.parcelas[0].valor) < 0.005);
+    const ultimoDif = !iguais && st.parcelas.slice(0, -1).every(p => Math.abs(p.valor - st.parcelas[0].valor) < 0.005);
+    $('#nr-resumo').innerHTML = `<div class="conta">
+      <div><span>Valor principal</span><b>${moeda(s.valor_principal)}</b></div>
+      <div><span>Percentual</span><b>${pct(s.percentual)}</b></div>
+      <div><span>Valor adicional</span><b>${moeda(s.acrescimo)}</b></div>
+      <div class="total"><span style="color:inherit">Total</span><span>${moeda(soma)}</span></div></div>
+      <p style="margin:10px 0 0" class="forte">${st.parcelas.length}x de ${moeda(st.parcelas[0].valor)}${ultimoDif ? ' <span class="muted" style="font-weight:500">(última de ' + moeda(st.parcelas.at(-1).valor) + ')</span>' : iguais ? '' : ' <span class="muted" style="font-weight:500">(valores ajustados)</span>'}</p>
+      <p class="muted" style="margin:2px 0 0">${FREQ[s.frequencia]} · de ${dataBR(st.parcelas[0].vencimento)} a ${dataBR(st.parcelas.at(-1).vencimento)}</p>
+      ${st.editado && Math.abs(soma - s.total) > 0.004 ? '<div class="aviso">A soma das parcelas (' + moeda(soma) + ') é diferente do total calculado (' + moeda(s.total) + '). Será salvo o valor das parcelas.</div>' : ''}`;
+  };
+  const desenharParcelas = () => {
+    $('#nr-parcelas').innerHTML = `<div class="caderneta editavel"><div class="caderneta-cab"><div class="n">Nº</div><div>Vencimento</div><div>Valor</div></div>
+      <div class="caderneta-rolagem">${st.parcelas.map((p, i) => `<div class="caderneta-linha"><div class="n">${p.numero}</div>
+        <div class="c-venc"><input class="entrada" type="date" data-i="${i}" data-c="vencimento" value="${p.vencimento}"></div>
+        <div class="c-valor"><input class="entrada num" inputmode="decimal" data-i="${i}" data-c="valor" value="${p.valor.toFixed(2).replace('.', ',')}"></div></div>`).join('')}</div>
+      <div class="caderneta-rodape"><span class="muted" style="font-weight:500">Toque para ajustar uma parcela</span><button class="link-btn" id="nr-refazer" style="padding:0" ${st.editado ? '' : 'hidden'}>Desfazer ajustes</button></div></div>`;
+    $('#nr-parcelas').querySelectorAll('input').forEach(inp => inp.addEventListener('change', e => {
+      const i = Number(e.target.dataset.i);
+      if (e.target.dataset.c === 'valor') st.parcelas[i].valor = lerMoeda(e.target.value);
+      else st.parcelas[i].vencimento = e.target.value;
+      st.editado = true; desenharResumo();
+      $('#nr-refazer').hidden = false;
+    }));
+    $('#nr-refazer').onclick = () => { st.parcelas = st.sim.parcelas.map(p => ({ ...p })); st.editado = false; desenharResumo(); desenharParcelas(); };
+  };
+
+  const validar = () => { $('#nr-salvar').disabled = !(st.cliente && st.descricao && st.sim && st.parcelas && st.parcelas.length); };
+  $('#nr-salvar').onclick = async () => {
+    const b = $('#nr-salvar'); b.disabled = true;
+    try {
+      const r = await POST('/registros', { ...corpo(), client_id: st.cliente.id, descricao: st.descricao, observacoes: $('#nr-obs').value,
+                                           parcelas: st.editado ? st.parcelas : undefined });
+      toast('Registro criado: ' + r.parcelas + ' parcelas, ' + moeda(r.total) + '.', 'ok');
+      location.hash = '#/cliente/' + st.cliente.id;
+    } catch (e) { falha(e); b.disabled = false; }
+  };
+  if (!st.cliente) setTimeout(() => { const i = $('#nr-cli-q'); if (i && window.innerWidth > 640) i.focus(); }, 50);
+};
+
+/* ═══════════════════ CALENDÁRIO ═══════════════════ */
+Admin.calendario = async el => {
+  let mes = hojeISO().slice(0, 7), sel = hojeISO();
+  el.innerHTML = `<div class="topo"><div><h1>Calendário</h1><p>Vencimentos por dia</p></div>
+    <div class="acoes"><button class="btn btn-claro btn-icone" id="ca-ant" aria-label="Mês anterior">‹</button><h2 id="ca-mes" style="min-width:150px;text-align:center;align-self:center"></h2><button class="btn btn-claro btn-icone" id="ca-prox" aria-label="Próximo mês">›</button></div></div>
+    <div class="painel"><div class="cal-cab">${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(d => '<div>' + d + '</div>').join('')}</div><div class="cal" id="ca-grade"></div></div>
+    <div class="painel mt"><div class="painel-topo"><h2 id="ca-dia-t"></h2><small id="ca-dia-s"></small></div><div class="lista" id="ca-dia"></div></div>`;
+  const $ = s => el.querySelector(s);
+  const verDia = async dia => {
+    sel = dia;
+    el.querySelectorAll('.cal-dia').forEach(x => x.classList.toggle('sel', x.dataset.d === dia));
+    $('#ca-dia-t').textContent = new Date(dia + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
+    carregando($('#ca-dia'));
+    try {
+      const r = await GET('/parcelas?aba=todas&de=' + dia + '&ate=' + dia);
+      const lista = r.parcelas.filter(p => p.status !== 'cancelado' && p.registro_status !== 'cancelado');
+      $('#ca-dia-s').textContent = lista.length ? lista.length + ' parcela(s)' : '';
+      $('#ca-dia').innerHTML = lista.length ? lista.map(p => linhaCobranca(p, { mostrarPago: true })).join('') : '<div class="vazio">Nenhum vencimento neste dia.</div>';
+    } catch (e) { falha(e); }
+  };
+  const desenhar = async () => {
+    const [a, m] = mes.split('-').map(Number);
+    $('#ca-mes').textContent = new Date(a, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const r = await GET('/calendario?mes=' + mes);
+    const mapa = Object.fromEntries(r.dias.map(d => [d.dia, d]));
+    const inicio = new Date(Date.UTC(a, m - 1, 1)).getUTCDay(), total = new Date(Date.UTC(a, m, 0)).getUTCDate();
+    let h = '';
+    for (let i = 0; i < inicio; i++) h += '<div class="cal-dia fora"></div>';
+    for (let d = 1; d <= total; d++) {
+      const iso = mes + '-' + String(d).padStart(2, '0'), x = mapa[iso];
+      const tipo = x ? (x.atrasadas ? 't-atraso' : x.pagas === x.qtd ? 't-pago' : 't-aberto') : '';
+      h += `<button class="cal-dia ${tipo} ${iso === r.hoje ? 'hoje' : ''} ${iso === sel ? 'sel' : ''}" data-d="${iso}"><b>${d}</b>
+        ${x ? `<span class="cq muted">${x.qtd} parc.</span><span class="cv">${moedaCurta(x.pagas === x.qtd ? x.total : x.a_receber)}</span>` : ''}</button>`;
+    }
+    $('#ca-grade').innerHTML = h;
+    el.querySelectorAll('.cal-dia[data-d]').forEach(b => b.onclick = () => verDia(b.dataset.d));
+  };
+  const mudar = n => { const [a, m] = mes.split('-').map(Number); const d = new Date(Date.UTC(a, m - 1 + n, 1)); mes = d.toISOString().slice(0, 7); desenhar().catch(falha); };
+  $('#ca-ant').onclick = () => mudar(-1);
+  $('#ca-prox').onclick = () => mudar(1);
+  await desenhar();
+  verDia(sel);
+};
+
+/* ═══════════════════ RELATÓRIOS ═══════════════════ */
+Admin.relatorios = async el => {
+  const h = hojeISO();
+  const iniMes = h.slice(0, 7) + '-01';
+  const antIni = (() => { const [a, m] = h.split('-').map(Number); return new Date(Date.UTC(a, m - 2, 1)).toISOString().slice(0, 10); })();
+  const antFim = somaDias(iniMes, -1);
+  const periodos = { hoje: ['Hoje', h, h], d7: ['7 dias', somaDias(h, -6), h], d30: ['30 dias', somaDias(h, -29), h], mes: ['Este mês', iniMes, h], ant: ['Mês anterior', antIni, antFim], pers: ['Personalizado'] };
+  let atual = 'mes';
+  el.innerHTML = `<div class="topo"><div><h1>Relatórios</h1><p id="rl-per"></p></div><button class="btn btn-claro" onclick="window.print()">Imprimir</button></div>
+    <div class="abas" id="rl-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === atual ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
+    <div class="linha-campos" id="rl-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="rl-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="rl-ate" value="${h}"></div></div>
+    <div id="rl-corpo"></div>`;
+  const $ = s => el.querySelector(s);
+  const tabela = (titulo, linhas, cols) => `<div class="painel"><h2 style="margin-bottom:8px">${titulo}</h2>${linhas.length ? `<div class="tabela-wrap"><table class="tabela"><tr>${cols.map(c => `<th class="${c.dir ? 'dir' : ''}">${c.t}</th>`).join('')}</tr>
+    ${linhas.map(l => '<tr>' + cols.map(c => `<td class="${c.dir ? 'dir' : ''}">${c.f(l)}</td>`).join('') + '</tr>').join('')}</table></div>` : '<div class="vazio">Sem dados no período.</div>'}</div>`;
+  const carregar = async (de, ate) => {
+    carregando($('#rl-corpo'));
+    try {
+      const r = await GET('/relatorios?de=' + de + '&ate=' + ate);
+      $('#rl-per').textContent = dataBR(r.de) + ' a ' + dataBR(r.ate);
+      const max = Math.max(1, ...r.por_periodo.map(p => Math.max(p.previsto, p.recebido)));
+      $('#rl-corpo').innerHTML = `
+        <div class="grade grade-4">
+          <div class="indicador"><span>Total registrado</span><strong>${moeda(r.registrado.v)}</strong><small>${r.registrado.n} registro(s)</small></div>
+          <div class="indicador bom"><span>Total recebido</span><strong>${moeda(r.recebido.v)}</strong><small>${r.recebido.n} pagamento(s)</small></div>
+          <div class="indicador"><span>Pendente no período</span><strong>${moeda(r.pendente.v)}</strong><small>${r.pendente.n} parcela(s)</small></div>
+          <div class="indicador alerta"><span>Em atraso hoje</span><strong>${moeda(r.atrasado.v)}</strong><small>${r.atrasado.n} parcela(s)</small></div>
+          <div class="indicador"><span>Vencimentos no período</span><strong>${moeda(r.previsto.v)}</strong></div>
+          <div class="indicador"><span>Acréscimos dos registros do período</span><strong>${moeda(r.registrado.acr)}</strong></div>
+          <div class="indicador"><span>Acréscimos previstos (ativos)</span><strong>${moeda(r.acrescimos_ativos)}</strong></div>
+          <div class="indicador"><span>Recebido ÷ vencimentos</span><strong>${r.previsto.v > 0 ? pct(r.recebido.v / r.previsto.v * 100) : '—'}</strong></div>
+        </div>
+        <div class="painel mt"><div class="painel-topo"><h2>Valores por período</h2><div class="legenda"><span><i style="background:#C9D5EE"></i>Vencimentos</span><span><i style="background:var(--verde)"></i>Recebido</span></div></div>
+          ${r.por_periodo.length ? `<div class="barras">${r.por_periodo.map(p => `<div class="barra" title="${esc(p.periodo)}: vencimentos ${moeda(p.previsto)}, recebido ${moeda(p.recebido)}"><div class="par">
+            <div class="b1" style="height:${(p.previsto / max * 100).toFixed(1)}%"></div><div class="b2" style="height:${(p.recebido / max * 100).toFixed(1)}%"></div></div>
+            <small>${p.periodo.length === 7 ? p.periodo.slice(5) + '/' + p.periodo.slice(2, 4) : dataCurta(p.periodo)}</small></div>`).join('')}</div>` : '<div class="vazio">Sem movimentação no período.</div>'}</div>
+        <div class="grade grade-2 mt">
+          ${tabela('Por cliente', r.por_cliente, [{ t: 'Cliente', f: l => `<a href="#/cliente/${l.id}">${esc(l.nome)}</a>` }, { t: 'Recebido', dir: 1, f: l => moeda(l.recebido) }, { t: 'Pendente', dir: 1, f: l => moeda(l.pendente) }, { t: 'Atraso', dir: 1, f: l => l.atrasado ? '<span style="color:var(--margem)">' + moeda(l.atrasado) + '</span>' : '—' }])}
+          ${tabela('Por descrição', r.por_descricao, [{ t: 'Descrição', f: l => esc(l.chave) }, { t: 'Qtd', dir: 1, f: l => l.registros }, { t: 'Total', dir: 1, f: l => moeda(l.total) }, { t: 'Recebido', dir: 1, f: l => moeda(l.recebido) }])}
+          ${tabela('Por frequência', r.por_frequencia, [{ t: 'Frequência', f: l => FREQ[l.chave] || esc(l.chave) }, { t: 'Qtd', dir: 1, f: l => l.registros }, { t: 'Total', dir: 1, f: l => moeda(l.total) }, { t: 'Acréscimos', dir: 1, f: l => moeda(l.acrescimo) }])}
+          ${tabela('Por forma de pagamento', r.por_forma, [{ t: 'Forma', f: l => esc(l.chave) }, { t: 'Pagamentos', dir: 1, f: l => l.n }, { t: 'Valor', dir: 1, f: l => moeda(l.v) }])}
+        </div>`;
+    } catch (e) { falha(e); }
+  };
+  el.querySelectorAll('#rl-abas button').forEach(b => b.onclick = () => {
+    atual = b.dataset.p;
+    el.querySelectorAll('#rl-abas button').forEach(x => x.classList.toggle('sel', x === b));
+    $('#rl-pers').hidden = atual !== 'pers';
+    if (atual === 'pers') carregar($('#rl-de').value, $('#rl-ate').value);
+    else carregar(periodos[atual][1], periodos[atual][2]);
+  });
+  ['#rl-de', '#rl-ate'].forEach(s => $(s).addEventListener('change', () => carregar($('#rl-de').value, $('#rl-ate').value)));
+  carregar(iniMes, h);
+};
+
+/* ═══════════════════ CONFIGURAÇÕES ═══════════════════ */
+Admin.config = async el => {
+  const c = await carregarConfig(true);
+  const mod = await GET('/modelos');
+  const editar = pode('configuracoes');
+  const lig = k => String(c[k]) === '1';
+  const tg = (k, t) => `<label class="check"><input type="checkbox" name="${k}" ${lig(k) ? 'checked' : ''} ${editar ? '' : 'disabled'}> ${t}</label>`;
+  el.innerHTML = `<div class="topo"><div><h1>Configurações</h1><p>${editar ? 'Ajuste o sistema ao seu jeito de trabalhar.' : 'Você pode ver, mas não alterar, estas configurações.'}</p></div></div>
+    <div class="grade grade-2" style="align-items:start">
+      <div>
+        <div class="painel" id="cf-empresa"><h2 style="margin-bottom:12px">Dados da empresa</h2>
+          <div class="campo"><label>Nome que aparece nas mensagens</label><input class="entrada" name="empresa_nome" value="${esc(c.empresa_nome)}"></div>
+          <div class="linha-campos"><div class="campo"><label>CPF/CNPJ</label><input class="entrada" name="empresa_documento" value="${esc(c.empresa_documento)}"></div>
+          <div class="campo"><label>Telefone</label><input class="entrada" name="empresa_telefone" value="${esc(c.empresa_telefone)}"></div></div>
+          <div class="campo"><label>Endereço</label><input class="entrada" name="empresa_endereco" value="${esc(c.empresa_endereco)}"></div>
+          <div class="campo"><label>Chave Pix (variável {pix})</label><input class="entrada" name="pix_chave" value="${esc(c.pix_chave)}"></div>
+          ${editar ? '<button class="btn" data-salvar="cf-empresa">Salvar dados</button>' : ''}</div>
+        <div class="painel" id="cf-cobranca"><h2 style="margin-bottom:12px">Cobrança</h2>
+          <div class="campo"><label>Percentuais rápidos</label><input class="entrada" name="percentuais_padrao" data-lista="num" value="${esc(c.percentuais.join('; '))}"><small>Separe com ponto e vírgula. Ex.: 10; 12; 12,5; 20</small></div>
+          <div class="campo"><label>Descrições rápidas</label><input class="entrada" name="descricoes_padrao" data-lista="txt" value="${esc(c.descricoes.join('; '))}"><small>Aparecem como atalhos no novo registro.</small></div>
+          <div class="campo"><label>Formas de pagamento</label><input class="entrada" name="formas_pagamento" data-lista="txt" value="${esc(c.formas.join('; '))}"></div>
+          ${editar ? '<button class="btn" data-salvar="cf-cobranca">Salvar cobrança</button>' : ''}</div>
+        <div class="painel" id="cf-lemb"><h2 style="margin-bottom:6px">Lembretes</h2><p class="muted" style="margin-top:0">O sistema prepara os lembretes todos os dias. No modo manual, eles aparecem no Início para você enviar com um toque.</p>
+          ${tg('lembrete_7d', '7 dias antes')}${tg('lembrete_3d', '3 dias antes')}${tg('lembrete_1d', '1 dia antes')}${tg('lembrete_hoje', 'No dia do vencimento')}
+          ${tg('lembrete_diario', 'Pagamentos diários: lembrete todo dia de pagamento')}
+          ${tg('lembrete_atraso', 'Depois do vencimento')}
+          <div class="linha-campos"><div class="campo"><label>Repetir a cada (dias)</label><input class="entrada" type="number" min="1" max="30" name="lembrete_atraso_intervalo" value="${esc(c.lembrete_atraso_intervalo)}" ${editar ? '' : 'disabled'}></div>
+          <div class="campo"><label>Parar após (dias de atraso)</label><input class="entrada" type="number" min="1" max="365" name="lembrete_atraso_max" value="${esc(c.lembrete_atraso_max)}" ${editar ? '' : 'disabled'}></div></div>
+          ${editar ? '<button class="btn" data-salvar="cf-lemb">Salvar lembretes</button>' : ''}</div>
+      </div>
+      <div>
+        <div class="painel"><h2 style="margin-bottom:6px">Modelos de cobrança</h2><p class="muted" style="margin-top:0">Toque numa variável para inserir no texto.</p>
+          <div class="chips" style="gap:6px;margin-bottom:10px">${mod.variaveis.map(v => `<button type="button" class="var-chip" data-var="${v}">${v}</button>`).join('')}</div>
+          ${mod.modelos.map(m => `<div class="campo" style="margin-top:16px"><label>${esc(m.titulo)}</label>
+            <textarea class="entrada" data-modelo="${m.tipo}" rows="8" ${editar ? '' : 'disabled'}>${esc(m.texto)}</textarea>
+            <div class="acoes">${editar ? `<button class="btn btn-p" data-mod-salvar="${m.tipo}">Salvar</button><button class="btn btn-p btn-claro" data-mod-rest="${m.tipo}">Restaurar padrão</button>` : ''}<button class="btn btn-p btn-claro" data-mod-prev="${m.tipo}">Ver exemplo</button></div></div>`).join('')}</div>
+        <div class="painel" id="cf-zap"><h2 style="margin-bottom:6px">WhatsApp</h2>
+          <div class="campo"><label>Modo de envio</label><select class="entrada" name="whatsapp_provedor" ${editar ? '' : 'disabled'}>
+            <option value="manual" ${c.whatsapp_provedor === 'manual' ? 'selected' : ''}>Manual: abro o WhatsApp com a mensagem pronta</option>
+            <option value="webhook" ${c.whatsapp_provedor === 'webhook' ? 'selected' : ''}>Automático: enviar por uma API de WhatsApp</option></select></div>
+          <div id="cf-zap-auto" ${c.whatsapp_provedor === 'webhook' ? '' : 'hidden'}>
+            <div class="campo"><label>Endereço da API (URL)</label><input class="entrada" name="whatsapp_webhook_url" placeholder="https://..." value="${esc(c.whatsapp_webhook_url)}"><small>O sistema envia um POST com { telefone, mensagem } das 8h às 20h.</small></div>
+            <div class="campo"><label>Token de acesso</label><input class="entrada" name="whatsapp_webhook_token" type="password" value="${esc(c.whatsapp_webhook_token)}"></div>
+            ${editar ? '<div class="linha-campos"><div class="campo"><label>Número para teste</label><input class="entrada" id="cf-zap-tel" inputmode="tel" placeholder="(88) 99999-0000"></div></div><button class="btn btn-claro" id="cf-zap-teste">Enviar teste</button>' : ''}
+          </div>
+          ${editar ? '<button class="btn mt" data-salvar="cf-zap">Salvar WhatsApp</button>' : ''}</div>
+        <div class="painel"><h2 style="margin-bottom:12px">Minha conta</h2>
+          <p style="margin-top:0"><b>${esc(Sessao.usuario.nome)}</b></p>
+          <div class="campo"><label>Senha atual</label><input class="entrada" type="password" id="cf-s1" autocomplete="current-password"></div>
+          <div class="campo"><label>Nova senha</label><input class="entrada" type="password" id="cf-s2" autocomplete="new-password"><small>Mínimo de 6 caracteres.</small></div>
+          <button class="btn" id="cf-senha">Trocar senha</button></div>
+      </div>
+    </div>`;
+  const $ = s => el.querySelector(s);
+  el.querySelectorAll('[data-salvar]').forEach(b => b.onclick = async () => {
+    const box = $('#' + b.dataset.salvar), dados = {};
+    box.querySelectorAll('[name]').forEach(i => {
+      if (i.type === 'checkbox') dados[i.name] = i.checked ? '1' : '0';
+      else if (i.dataset.lista) dados[i.name] = JSON.stringify(i.value.split(';').map(x => x.trim()).filter(Boolean).map(x => i.dataset.lista === 'num' ? lerNumero(x) : x));
+      else dados[i.name] = i.value;
+    });
+    try { await PUT('/config', dados); await carregarConfig(true); toast('Configurações salvas.', 'ok'); } catch (e) { falha(e); }
+  });
+  let ultimoTexto = null;
+  el.querySelectorAll('[data-modelo]').forEach(t => t.addEventListener('focus', () => { ultimoTexto = t; }));
+  el.querySelectorAll('[data-var]').forEach(v => v.onclick = () => {
+    const t = ultimoTexto || el.querySelector('[data-modelo]');
+    if (!t || t.disabled) return;
+    const i = t.selectionStart ?? t.value.length;
+    t.value = t.value.slice(0, i) + v.dataset.var + t.value.slice(t.selectionEnd ?? i);
+    t.focus(); t.selectionStart = t.selectionEnd = i + v.dataset.var.length;
+  });
+  el.querySelectorAll('[data-mod-salvar]').forEach(b => b.onclick = async () => {
+    try { await PUT('/modelos/' + b.dataset.modSalvar, { texto: el.querySelector(`[data-modelo="${b.dataset.modSalvar}"]`).value }); toast('Modelo salvo.', 'ok'); } catch (e) { falha(e); }
+  });
+  el.querySelectorAll('[data-mod-rest]').forEach(b => b.onclick = async () => {
+    try { const r = await POST('/modelos/' + b.dataset.modRest + '/restaurar'); el.querySelector(`[data-modelo="${b.dataset.modRest}"]`).value = r.texto; toast('Modelo restaurado.', 'ok'); } catch (e) { falha(e); }
+  });
+  el.querySelectorAll('[data-mod-prev]').forEach(b => b.onclick = async () => {
+    try {
+      const r = await POST('/modelos/previa', { tipo: b.dataset.modPrev, texto: el.querySelector(`[data-modelo="${b.dataset.modPrev}"]`).value });
+      abrirModal({ titulo: 'Exemplo da mensagem', subtitulo: 'Com dados fictícios', corpo: '<div class="previa">' + esc(r.texto) + '</div>', rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>' });
+    } catch (e) { falha(e); }
+  });
+  const sel = el.querySelector('[name=whatsapp_provedor]');
+  sel.addEventListener('change', () => { $('#cf-zap-auto').hidden = sel.value !== 'webhook'; });
+  const tb = $('#cf-zap-teste');
+  if (tb) tb.onclick = async () => {
+    try { const r = await POST('/whatsapp/teste', { telefone: $('#cf-zap-tel').value }); r.ok ? toast('Mensagem de teste enviada.', 'ok') : toast(r.erro || 'Falha no envio.', 'erro'); } catch (e) { falha(e); }
+  };
+  $('#cf-senha').onclick = async () => {
+    try { await PUT('/auth/senha', { atual: $('#cf-s1').value, nova: $('#cf-s2').value }); $('#cf-s1').value = $('#cf-s2').value = ''; toast('Senha alterada.', 'ok'); } catch (e) { falha(e); }
+  };
+};
