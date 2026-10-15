@@ -133,6 +133,7 @@ const ACOES_AUDIT = {
   admin_editado: 'Administrador editado', admin_bloqueado: 'Acesso bloqueado', admin_ativado: 'Acesso ativado', admin_excluido: 'Administrador excluído',
   cliente_criado: 'Cliente criado', cliente_editado: 'Cliente editado', cliente_excluido: 'Cliente excluído',
   registro_criado: 'Registro criado', registro_editado: 'Registro editado', registro_cancelado: 'Registro cancelado',
+  registro_abatido: 'Valor abatido', registro_renegociado: 'Dívida renegociada',
   parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
   config_alterada: 'Configurações alteradas', modelo_alterado: 'Modelo de mensagem alterado', config_sistema: 'Configuração do sistema',
   lancamento_criado: 'Lançamento financeiro criado', lancamento_editado: 'Lançamento financeiro editado', lancamento_excluido: 'Lançamento financeiro excluído',

@@ -190,4 +190,175 @@ router.post('/:id/cancelar', A.exigir('registros'), (req, res) => {
   res.json({ ok: true });
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ABATER VALOR (pagamento antecipado / amortização) e RENEGOCIAR
+// ═══════════════════════════════════════════════════════════════════════════
+const msgs = require('./mensagens');
+const whatsapp = require('./whatsapp');
+const cent = v => Math.round((Number(v) || 0) * 100);
+const erro400 = m => { const e = new Error(m); e.status = 400; return e; };
+const moedaTxt = v => 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ',');
+
+function abertasDo(recId) {
+  return db.prepare(`SELECT * FROM installments WHERE record_id = ? AND status IN ('pendente','parcial') ORDER BY vencimento, numero`).all(recId);
+}
+
+function fecharStatusRegistro(recId) {
+  const n = db.prepare(`SELECT COUNT(*) n FROM installments WHERE record_id = ? AND status IN ('pendente','parcial')`).get(recId).n;
+  db.prepare(`UPDATE records SET status = ?, atualizado_em = ? WHERE id = ? AND status <> 'cancelado'`).run(n ? 'ativo' : 'quitado', new Date().toISOString(), recId);
+}
+
+// Divide `total` (centavos) entre itens proporcionalmente a `pesos` (centavos), sem perder centavo
+function dividir(total, pesos) {
+  const soma = pesos.reduce((a, b) => a + b, 0);
+  if (!soma) return pesos.map(() => 0);
+  const out = pesos.map(w => Math.floor(total * w / soma));
+  let resto = total - out.reduce((a, b) => a + b, 0);
+  for (let i = 0; resto > 0; i = (i + 1) % out.length) { if (out[i] < pesos[i]) { out[i]++; resto--; } }
+  return out;
+}
+
+function planoAbatimento(rec, b) {
+  if (rec.status !== 'ativo') throw erro400('Só é possível abater em registros ativos.');
+  const valor = cent(b.valor), desconto = cent(b.desconto);
+  if (valor <= 0) throw erro400('Informe o valor recebido.');
+  if (desconto < 0) throw erro400('Desconto inválido.');
+  const abertas = abertasDo(rec.id);
+  const rest = abertas.map(p => cent(p.valor) - cent(p.valor_pago));
+  const saldo = rest.reduce((a, b) => a + b, 0);
+  const credito = valor + desconto;
+  if (!saldo) throw erro400('Este registro não tem saldo em aberto.');
+  if (credito > saldo) throw erro400('O valor' + (desconto ? ' com o desconto' : '') + ' passa do saldo em aberto (' + moedaTxt(saldo / 100) + ').');
+  const modo = ['proximas', 'ultimas', 'reduzir'].includes(b.modo) ? b.modo : 'proximas';
+  let aplicar = abertas.map(() => 0);
+  if (modo === 'reduzir') aplicar = dividir(credito, rest);
+  else {
+    let falta = credito;
+    const ordem = abertas.map((_, i) => i);
+    if (modo === 'ultimas') ordem.reverse();
+    for (const i of ordem) { if (!falta) break; aplicar[i] = Math.min(rest[i], falta); falta -= aplicar[i]; }
+  }
+  const pagar = dividir(valor, aplicar);            // parte em dinheiro
+  const itens = abertas.map((p, i) => ({
+    id: p.id, numero: p.numero, vencimento: p.vencimento, valor_antes: p.valor, restante_antes: rest[i] / 100,
+    pagar: pagar[i] / 100, desconto: (aplicar[i] - pagar[i]) / 100,
+    novo_valor: (cent(p.valor) - (aplicar[i] - pagar[i])) / 100, restante_depois: (rest[i] - aplicar[i]) / 100,
+    quitada: rest[i] - aplicar[i] === 0,
+  }));
+  return { modo, valor: valor / 100, desconto: desconto / 100, saldo: saldo / 100, saldo_depois: (saldo - credito) / 100,
+           quitadas: itens.filter(x => x.quitada && (x.pagar || x.desconto)).length, itens };
+}
+
+router.post('/:id/simular-abatimento', A.exigir('pagamentos'), (req, res) => {
+  const rec = registroDoAdmin(req);
+  if (!rec) return res.status(404).json({ erro: 'Registro não encontrado.' });
+  try { res.json(planoAbatimento(rec, req.body || {})); } catch (e) { res.status(e.status || 500).json({ erro: e.message }); }
+});
+
+router.post('/:id/abater', A.exigir('pagamentos'), (req, res) => {
+  const rec = registroDoAdmin(req);
+  if (!rec) return res.status(404).json({ erro: 'Registro não encontrado.' });
+  const b = req.body || {};
+  let pl;
+  try { pl = planoAbatimento(rec, b); } catch (e) { return res.status(e.status || 500).json({ erro: e.message }); }
+  const data = isoValida(b.data) ? b.data : hoje();
+  const forma = String(b.forma || 'Dinheiro').trim().slice(0, 40);
+  const obs = ('Abatimento' + (pl.desconto ? ' com desconto de ' + moedaTxt(pl.desconto) : '') + (b.observacao ? ' · ' + String(b.observacao).trim() : '')).slice(0, 500);
+  const agora = new Date().toISOString();
+  db.transaction(() => {
+    for (const it of pl.itens) {
+      if (!it.pagar && !it.desconto) continue;
+      const p = db.prepare('SELECT * FROM installments WHERE id = ?').get(it.id);
+      const novoValor = r2(p.valor - it.desconto);
+      const pago = r2(p.valor_pago + it.pagar);
+      if (it.pagar) db.prepare(`INSERT INTO payments (admin_id, installment_id, record_id, client_id, valor, data_pagamento, forma, observacao, registrado_por)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(req.user.id, p.id, rec.id, rec.client_id, it.pagar, data, forma, obs, req.user.id);
+      const st = pago >= novoValor - 0.004 ? 'pago' : pago > 0 ? 'parcial' : 'pendente';
+      db.prepare(`UPDATE installments SET valor = ?, valor_pago = ?, status = ?, pago_em = CASE WHEN ? = 'pago' THEN ? ELSE pago_em END, atualizado_em = ? WHERE id = ?`)
+        .run(novoValor, pago, st, st, agora, agora, p.id);
+      db.prepare(`UPDATE reminders SET status = 'ignorado', erro = 'Parcela abatida' WHERE installment_id = ? AND status = 'pendente'`).run(p.id);
+    }
+    if (pl.desconto) db.prepare('UPDATE records SET total = ROUND(total - ?, 2), acrescimo = ROUND(acrescimo - ?, 2), atualizado_em = ? WHERE id = ?').run(pl.desconto, pl.desconto, agora, rec.id);
+    fecharStatusRegistro(rec.id);
+  })();
+  auditar(req, 'registro_abatido', 'records', rec.id, { registro: rec.id, valor: pl.valor, desconto: pl.desconto, modo: pl.modo,
+    saldo: { de: pl.saldo, para: pl.saldo_depois }, parcelas_quitadas: pl.quitadas, forma, data });
+  try { agendador.gerarLembretes(req.user.id); } catch (e) {}
+  const cli = db.prepare('SELECT nome, whatsapp, telefone FROM clients WHERE id = ?').get(rec.client_id);
+  const primeiro = String(cli.nome || '').trim().split(/\s+/)[0];
+  const texto = `Olá, ${primeiro}! Recebemos o seu pagamento de ${moedaTxt(pl.valor)} para abater ${rec.descricao}.` +
+    (pl.desconto ? ` Você ganhou ${moedaTxt(pl.desconto)} de desconto.` : '') +
+    (pl.saldo_depois > 0 ? `\n\nSaldo restante: ${moedaTxt(pl.saldo_depois)}.` : '\n\nSua dívida está quitada!') + '\n\nMuito obrigado!';
+  res.json({ ok: true, saldo_depois: pl.saldo_depois, quitadas: pl.quitadas, quitado: pl.saldo_depois <= 0,
+             confirmacao: { texto, link: whatsapp.link(cli.whatsapp || cli.telefone, texto) } });
+});
+
+function planoRenegociacao(rec, b) {
+  if (rec.status !== 'ativo') throw erro400('Só é possível renegociar registros ativos.');
+  const abertas = abertasDo(rec.id);
+  const saldo = abertas.reduce((a, p) => a + cent(p.valor) - cent(p.valor_pago), 0);
+  if (!saldo) throw erro400('Este registro não tem saldo em aberto.');
+  const pct = Number(String(b.acrescimo_pct ?? 0).replace(',', '.')) || 0;
+  if (pct < 0 || pct > 1000) throw erro400('Percentual inválido.');
+  const acr = Math.round(saldo * pct / 100), desconto = cent(b.desconto);
+  if (desconto < 0) throw erro400('Desconto inválido.');
+  const novo = saldo + acr - desconto;
+  if (novo <= 0) throw erro400('O desconto não pode ser maior que o saldo.');
+  if (!isoValida(b.data_inicial)) throw erro400('Escolha a data do primeiro vencimento.');
+  const d = new Date(b.data_inicial + 'T12:00:00Z');
+  const sim = simular({ ...b, valor_principal: novo / 100, percentual: 0,
+                        dia_mes: d.getUTCDate(), dia_semana: d.getUTCDay() });
+  const hj = hoje();
+  return { saldo: saldo / 100, atrasado: r2(abertas.filter(p => p.vencimento < hj).reduce((a, p) => a + p.valor - p.valor_pago, 0)),
+           parcelas_abertas: abertas.length, acrescimo_pct: pct, acrescimo: acr / 100, desconto: desconto / 100, novo_total: novo / 100,
+           frequencia: sim.frequencia, config: sim.config, qtd_parcelas: sim.qtd_parcelas, valor_parcela: sim.parcelas[0].valor, parcelas: sim.parcelas };
+}
+
+router.post('/:id/simular-renegociacao', A.exigir('registros'), (req, res) => {
+  const rec = registroDoAdmin(req);
+  if (!rec) return res.status(404).json({ erro: 'Registro não encontrado.' });
+  try { res.json(planoRenegociacao(rec, req.body || {})); } catch (e) { res.status(e.status || 500).json({ erro: e.message }); }
+});
+
+router.post('/:id/renegociar', A.exigir('registros'), (req, res) => {
+  const rec = registroDoAdmin(req);
+  if (!rec) return res.status(404).json({ erro: 'Registro não encontrado.' });
+  const b = req.body || {};
+  let pl;
+  try { pl = planoRenegociacao(rec, b); } catch (e) { return res.status(e.status || 500).json({ erro: e.message }); }
+  const agora = new Date().toISOString();
+  const motivo = String(b.motivo || '').trim().slice(0, 300);
+  db.transaction(() => {
+    for (const p of abertasDo(rec.id)) {
+      if (p.valor_pago > 0) // parte já paga fica registrada; o que faltava vai para o novo acordo
+        db.prepare(`UPDATE installments SET valor = valor_pago, status = 'pago', pago_em = ?, atualizado_em = ? WHERE id = ?`).run(agora, agora, p.id);
+      else db.prepare('DELETE FROM installments WHERE id = ?').run(p.id);
+    }
+    const ins = db.prepare(`INSERT INTO installments (admin_id, record_id, client_id, numero, vencimento, valor) VALUES (?, ?, ?, ?, ?, ?)`);
+    pl.parcelas.forEach((p, i) => ins.run(req.user.id, rec.id, rec.client_id, 900000 + i, p.vencimento, p.valor));
+    // renumera tudo em ordem de vencimento
+    const todas = db.prepare('SELECT id FROM installments WHERE record_id = ? ORDER BY vencimento, numero').all(rec.id);
+    const upd = db.prepare('UPDATE installments SET numero = ? WHERE id = ?');
+    todas.forEach((p, i) => upd.run(-(i + 1), p.id));
+    todas.forEach((p, i) => upd.run(i + 1, p.id));
+    const total = db.prepare(`SELECT COALESCE(SUM(valor),0) t, COUNT(*) n FROM installments WHERE record_id = ? AND status <> 'cancelado'`).get(rec.id);
+    const nota = 'Renegociado em ' + hoje().split('-').reverse().join('/') + ': saldo ' + moedaTxt(pl.saldo) +
+      (pl.acrescimo ? ' + ' + String(pl.acrescimo_pct).replace('.', ',') + '%' : '') + (pl.desconto ? ' − desconto ' + moedaTxt(pl.desconto) : '') +
+      ' = ' + moedaTxt(pl.novo_total) + ' em ' + pl.qtd_parcelas + 'x' + (motivo ? ' (' + motivo + ')' : '');
+    db.prepare(`UPDATE records SET total = ?, acrescimo = ROUND(? - valor_principal, 2), qtd_parcelas = ?, frequencia = ?, config = ?, status = 'ativo',
+                observacoes = TRIM(COALESCE(observacoes || char(10), '') || ?), atualizado_em = ? WHERE id = ?`)
+      .run(r2(total.t), r2(total.t), total.n, pl.frequencia, JSON.stringify(pl.config), nota, agora, rec.id);
+  })();
+  auditar(req, 'registro_renegociado', 'records', rec.id, { registro: rec.id, saldo: pl.saldo, acrescimo_pct: pl.acrescimo_pct, acrescimo: pl.acrescimo,
+    desconto: pl.desconto, total: pl.novo_total, parcelas: pl.qtd_parcelas, frequencia: pl.frequencia, motivo });
+  try { agendador.gerarLembretes(req.user.id); } catch (e) {}
+  const cli = db.prepare('SELECT nome, whatsapp, telefone FROM clients WHERE id = ?').get(rec.client_id);
+  const primeiro = String(cli.nome || '').trim().split(/\s+/)[0];
+  const texto = `Olá, ${primeiro}! Conforme combinamos, renegociamos ${rec.descricao}.\n\n` +
+    `Novo acordo: ${pl.qtd_parcelas}x de ${moedaTxt(pl.valor_parcela)}, total ${moedaTxt(pl.novo_total)}.\n` +
+    `Primeiro vencimento: ${pl.parcelas[0].vencimento.split('-').reverse().join('/')}.\n\nQualquer dúvida, estou à disposição.`;
+  res.json({ ok: true, total: pl.novo_total, parcelas: pl.qtd_parcelas, confirmacao: { texto, link: whatsapp.link(cli.whatsapp || cli.telefone, texto) } });
+});
+
 module.exports = router;

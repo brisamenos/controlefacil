@@ -396,6 +396,8 @@ Admin.cliente = async (el, id) => {
         <div class="acoes mt">
           <button class="btn btn-p btn-claro" onclick="historicoRegistro(${reg.id})">${I.hist} Histórico</button>
           ${pode('registros') && reg.status !== 'cancelado' ? `<a class="btn btn-p" href="#/novo?editar=${reg.id}">✏️ Editar registro</a>` : ''}
+          ${reg.status === 'ativo' && pode('pagamentos') ? `<button class="btn btn-p btn-verde" onclick="abaterValor(${reg.id})">💵 Abater valor</button>` : ''}
+          ${reg.status === 'ativo' && pode('registros') ? `<button class="btn btn-p ${reg.parcelas.some(p => p.situacao && p.situacao.codigo === 'atrasado') ? '' : 'btn-claro'}" onclick="renegociar(${reg.id})">🤝 Renegociar</button>` : ''}
           ${reg.status === 'ativo' && pode('registros') ? `<button class="btn btn-p btn-perigo" onclick="cancelarRegistro(${reg.id})">Cancelar registro</button>` : ''}
         </div></div>`;
     }).join('') : `<div class="painel vazio">Nenhum registro para este cliente.${pode('registros') ? `<br><a class="btn" href="#/novo?cliente=${c.id}">Criar registro</a>` : ''}</div>`}
@@ -427,6 +429,173 @@ function cancelarRegistro(id) {
     catch (err) { falha(err); e.currentTarget.disabled = false; }
   };
 }
+/* ── Abater valor (pagamento antecipado / amortização) ──── */
+async function abaterValor(id) {
+  await carregarConfig();
+  const reg = (window.__reg || {})[id] || {};
+  const MODOS = { proximas: 'Próximas', ultimas: 'Últimas', reduzir: 'Diminuir todas' };
+  const DICAS = {
+    proximas: 'Quita as parcelas mais próximas primeiro.',
+    ultimas: 'Quita do fim para o começo: a dívida termina mais cedo e as próximas continuam iguais.',
+    reduzir: 'Divide o valor entre todas as parcelas em aberto: cada uma fica menor.',
+  };
+  let modo = 'proximas';
+  const m = abrirModal({
+    titulo: 'Abater valor', subtitulo: esc(reg.descricao || ''), largo: true,
+    corpo: `<p style="margin-top:0" class="muted">Use quando o cliente paga uma quantia antes do vencimento. O valor entra no Financeiro como recebido.</p>
+      <div class="campo"><label for="ab-valor">Valor que o cliente pagou</label><input class="entrada entrada-grande num" id="ab-valor" inputmode="decimal" placeholder="0,00"></div>
+      <div class="campo"><span class="rotulo">Onde abater</span><div class="segmentos" id="ab-modo">${Object.entries(MODOS).map(([k, v]) => `<button type="button" data-v="${k}" class="${k === modo ? 'sel' : ''}">${v}</button>`).join('')}</div>
+        <small class="muted" id="ab-dica" style="display:block;margin-top:6px">${DICAS[modo]}</small></div>
+      <div class="campo"><label for="ab-desc">Desconto por pagar antes <span class="muted" style="font-weight:500">(opcional)</span></label><input class="entrada num" id="ab-desc" inputmode="decimal" placeholder="0,00"></div>
+      <div class="campo"><label for="ab-data">Data do pagamento</label><input class="entrada" id="ab-data" type="date" value="${hojeISO()}"></div>
+      <div class="campo"><span class="rotulo">Forma de pagamento</span><div class="chips" id="ab-formas">${CFG.formas.map((f, i) => `<button type="button" class="chip${i === 0 ? ' sel' : ''}" data-v="${esc(f)}">${esc(f)}</button>`).join('')}</div></div>
+      <div class="campo"><label for="ab-obs">Observação (opcional)</label><input class="entrada" id="ab-obs" placeholder="Ex.: adiantou parte da dívida"></div>
+      <div id="ab-previa"><p class="muted">Informe o valor para ver como fica.</p></div>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn btn-verde" id="ab-ok" disabled>' + I.ok + ' Confirmar abatimento</button>',
+  });
+  const $ = s => m.querySelector(s), ok = $('#ab-ok');
+  const dados = () => ({ valor: lerMoeda($('#ab-valor').value), desconto: lerMoeda($('#ab-desc').value) || 0, modo });
+  let seq = 0;
+  const previa = debounce(async () => {
+    const d = dados(), n = ++seq;
+    if (!(d.valor > 0)) { $('#ab-previa').innerHTML = '<p class="muted">Informe o valor para ver como fica.</p>'; ok.disabled = true; return; }
+    try {
+      const r = await POST('/registros/' + id + '/simular-abatimento', d);
+      if (n !== seq) return;
+      const mud = r.itens.filter(i => i.pagar > 0 || i.desconto > 0);
+      $('#ab-previa').innerHTML = `<div class="painel" style="padding:12px">
+        <div class="item-sub" style="margin-bottom:8px"><span>Saldo hoje <b>${moeda(r.saldo)}</b></span><span>Fica devendo <b>${moeda(r.saldo_depois)}</b></span>${r.quitadas ? '<span>' + r.quitadas + ' parcela(s) quitada(s)</span>' : ''}</div>
+        ${r.saldo_depois === 0 ? '<div class="aviso info" style="margin:0 0 8px">Com este valor a dívida fica quitada.</div>' : ''}
+        <div class="tabela-wrap"><table class="tabela"><tr><th>Parcela</th><th class="dir">Abate</th><th class="dir">Fica</th></tr>
+        ${mud.map(i => `<tr><td><b>${i.numero}ª</b><br><small class="muted">${dataBR(i.vencimento)}</small></td><td class="dir" style="white-space:nowrap">${moeda(i.pagar)}${i.desconto ? '<br><small class="muted">desc. ' + moeda(i.desconto) + '</small>' : ''}</td>
+          <td class="dir forte" style="white-space:nowrap">${i.quitada ? 'Paga' : moeda(i.restante_depois)}</td></tr>`).join('')}</table></div></div>`;
+      ok.disabled = false;
+    } catch (e) { if (n !== seq) return; $('#ab-previa').innerHTML = '<div class="aviso erro">' + esc(e.message) + '</div>'; ok.disabled = true; }
+  }, 300);
+  $('#ab-valor').addEventListener('input', previa);
+  $('#ab-desc').addEventListener('input', previa);
+  m.querySelectorAll('#ab-modo button').forEach(b => b.onclick = () => {
+    modo = b.dataset.v; m.querySelectorAll('#ab-modo button').forEach(x => x.classList.toggle('sel', x === b));
+    $('#ab-dica').textContent = DICAS[modo]; previa();
+  });
+  m.querySelectorAll('#ab-formas .chip').forEach(c => c.onclick = () => { m.querySelectorAll('#ab-formas .chip').forEach(x => x.classList.remove('sel')); c.classList.add('sel'); });
+  setTimeout(() => $('#ab-valor').focus(), 50);
+  ok.onclick = async () => {
+    ok.disabled = true;
+    try {
+      const r = await POST('/registros/' + id + '/abater', { ...dados(), data: $('#ab-data').value,
+        forma: ($('#ab-formas .sel') || {}).dataset?.v || 'Dinheiro', observacao: $('#ab-obs').value });
+      mostrarConfirmacao(r.quitado ? 'Dívida quitada' : 'Valor abatido',
+        r.quitado ? 'Todas as parcelas foram pagas. O registro foi marcado como quitado.' : 'O valor foi abatido. Agora o cliente deve <b>' + moeda(r.saldo_depois) + '</b>.', r.confirmacao);
+      toast('Valor abatido.', 'ok');
+      App.recarregar();
+    } catch (e) { falha(e); ok.disabled = false; }
+  };
+}
+
+function mostrarConfirmacao(titulo, texto, conf) {
+  const zap = pode('whatsapp') && conf && conf.texto;
+  abrirModal({
+    titulo, corpo: `<p style="margin-top:0">${texto}</p>${zap ? '<p class="rotulo">Mensagem para o cliente</p><div class="previa">' + esc(conf.texto) + '</div>' : ''}`,
+    rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>' +
+      (zap ? `<a class="btn btn-zap" href="${esc(conf.link)}" target="_blank" rel="noopener" onclick="setTimeout(fecharModal,300)">${I.zap} Enviar ao cliente</a>` : ''),
+  });
+}
+
+/* ── Renegociar dívida ──────────────────────────────────── */
+async function renegociar(id) {
+  await carregarConfig();
+  const reg = (window.__reg || {})[id] || {};
+  const amanha = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+  const st = { pct: 0, freq: reg.frequencia && reg.frequencia !== 'personalizado' ? reg.frequencia : 'mensal', modo: 'qtd' };
+  const m = abrirModal({
+    titulo: 'Renegociar dívida', subtitulo: esc(reg.descricao || ''), largo: true,
+    corpo: `<p style="margin-top:0" class="muted">Junta tudo o que falta pagar (inclusive o atrasado) e cria parcelas novas. O que já foi pago continua no histórico.</p>
+      <div id="rn-saldo" class="item-sub" style="margin-bottom:12px"></div>
+      <div class="campo"><span class="rotulo">Juros da renegociação</span>
+        <div class="chips" id="rn-pcts"><button type="button" class="chip sel" data-v="0">Sem juros</button>${CFG.percentuais.map(p => `<button type="button" class="chip" data-v="${p}">${pct(p)}</button>`).join('')}<button type="button" class="chip" data-v="outro">Outro</button></div>
+        <input class="entrada mt" id="rn-pct-outro" inputmode="decimal" placeholder="Percentual, ex.: 12,5" hidden></div>
+      <div class="campo"><label for="rn-desc">Desconto <span class="muted" style="font-weight:500">(opcional)</span></label><input class="entrada num" id="rn-desc" inputmode="decimal" placeholder="0,00"></div>
+      <div class="campo"><span class="rotulo">Como vai pagar</span>
+        <div class="segmentos" id="rn-freq">${Object.entries(FREQ).map(([k, v]) => `<button type="button" data-v="${k}" class="${k === st.freq ? 'sel' : ''}">${v}</button>`).join('')}</div>
+        <div id="rn-freq-campos" class="mt"></div></div>
+      <div class="campo"><div class="segmentos" id="rn-modo"><button type="button" data-v="qtd" class="sel">Nº de parcelas</button><button type="button" data-v="valor">Valor da parcela</button></div>
+        <input class="entrada mt num" id="rn-qtd" inputmode="numeric" placeholder="Quantas parcelas? Ex.: 3"></div>
+      <div class="campo"><label for="rn-data">Primeiro vencimento</label><input class="entrada" id="rn-data" type="date" value="${amanha}"></div>
+      <div class="campo"><label for="rn-motivo">Motivo <span class="muted" style="font-weight:500">(opcional)</span></label><input class="entrada" id="rn-motivo" placeholder="Ex.: cliente atrasou e pediu mais prazo"></div>
+      <div id="rn-previa"></div>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="rn-ok" disabled>' + I.ok + ' Confirmar renegociação</button>',
+  });
+  const $ = s => m.querySelector(s), ok = $('#rn-ok');
+  let selDias = null;
+  const camposFreq = () => {
+    const box = $('#rn-freq-campos');
+    selDias = null;
+    if (st.freq === 'diario') {
+      const atuais = reg.config && Array.isArray(reg.config.dias_cobranca) ? reg.config.dias_cobranca : (CFG.dias_cobranca || [0, 1, 2, 3, 4, 5, 6]);
+      selDias = seletorDias(box, atuais, () => previa());
+    } else if (st.freq === 'personalizado') {
+      box.innerHTML = '<input class="entrada num" id="rn-int" inputmode="numeric" placeholder="A cada quantos dias? Ex.: 10">';
+      $('#rn-int').addEventListener('input', previa);
+    } else box.innerHTML = '';
+  };
+  const dados = () => {
+    const pctTxt = st.pct === 'outro' ? $('#rn-pct-outro').value : st.pct;
+    const n = $('#rn-qtd').value;
+    const b = { acrescimo_pct: Number(String(pctTxt).replace(',', '.')) || 0, desconto: lerMoeda($('#rn-desc').value) || 0,
+      frequencia: st.freq, data_inicial: $('#rn-data').value, motivo: $('#rn-motivo').value };
+    if (st.modo === 'qtd') b.qtd_parcelas = parseInt(n, 10) || 0; else b.valor_parcela = lerMoeda(n) || 0;
+    if (selDias) b.dias_cobranca = selDias.valor();
+    if (st.freq === 'personalizado') b.intervalo_dias = parseInt(($('#rn-int') || {}).value, 10) || 0;
+    return b;
+  };
+  let seq = 0;
+  const previa = debounce(async () => {
+    const n = ++seq;
+    try {
+      const r = await POST('/registros/' + id + '/simular-renegociacao', dados());
+      if (n !== seq) return;
+      $('#rn-saldo').innerHTML = `<span>Falta pagar <b>${moeda(r.saldo)}</b> em ${r.parcelas_abertas} parcela(s)</span>${r.atrasado > 0 ? '<span style="color:var(--margem)">Em atraso ' + moeda(r.atrasado) + '</span>' : ''}`;
+      const mostrar = r.parcelas.slice(0, 12);
+      $('#rn-previa').innerHTML = `<div class="painel" style="padding:12px">
+        <div class="item-sub" style="margin-bottom:8px"><span>Saldo ${moeda(r.saldo)}</span>${r.acrescimo ? '<span>+ juros ' + pct(r.acrescimo_pct) + ' = ' + moeda(r.acrescimo) + '</span>' : ''}${r.desconto ? '<span>− desconto ' + moeda(r.desconto) + '</span>' : ''}</div>
+        <div style="font-size:1.1rem;margin-bottom:8px">Novo total <b>${moeda(r.novo_total)}</b> em <b>${r.qtd_parcelas}x</b> de ${moeda(r.valor_parcela)}</div>
+        <div class="tabela-wrap"><table class="tabela"><tr><th>Nova parcela</th><th>Vencimento</th><th class="dir">Valor</th></tr>
+        ${mostrar.map(p => `<tr><td>${p.numero}</td><td>${dataBR(p.vencimento)}</td><td class="dir forte">${moeda(p.valor)}</td></tr>`).join('')}
+        ${r.parcelas.length > mostrar.length ? '<tr><td colspan="3" class="muted">… e mais ' + (r.parcelas.length - mostrar.length) + ' parcela(s)</td></tr>' : ''}</table></div></div>`;
+      ok.disabled = false;
+    } catch (e) {
+      if (n !== seq) return;
+      const vazio = !(dados().qtd_parcelas || dados().valor_parcela);
+      $('#rn-previa').innerHTML = vazio ? '<p class="muted">Informe as parcelas para ver como fica.</p>' : '<div class="aviso erro">' + esc(e.message) + '</div>';
+      ok.disabled = true;
+    }
+  }, 300);
+  m.querySelectorAll('#rn-pcts .chip').forEach(c => c.onclick = () => {
+    m.querySelectorAll('#rn-pcts .chip').forEach(x => x.classList.toggle('sel', x === c));
+    st.pct = c.dataset.v; $('#rn-pct-outro').hidden = st.pct !== 'outro'; if (st.pct === 'outro') $('#rn-pct-outro').focus();
+    previa();
+  });
+  m.querySelectorAll('#rn-freq button').forEach(b => b.onclick = () => {
+    st.freq = b.dataset.v; m.querySelectorAll('#rn-freq button').forEach(x => x.classList.toggle('sel', x === b)); camposFreq(); previa();
+  });
+  m.querySelectorAll('#rn-modo button').forEach(b => b.onclick = () => {
+    st.modo = b.dataset.v; m.querySelectorAll('#rn-modo button').forEach(x => x.classList.toggle('sel', x === b));
+    const q = $('#rn-qtd'); q.value = ''; q.placeholder = st.modo === 'qtd' ? 'Quantas parcelas? Ex.: 3' : 'Valor de cada parcela, ex.: 150,00';
+    q.inputMode = st.modo === 'qtd' ? 'numeric' : 'decimal'; previa();
+  });
+  ['#rn-pct-outro', '#rn-desc', '#rn-qtd', '#rn-data'].forEach(s => $(s).addEventListener('input', previa));
+  camposFreq(); previa();
+  ok.onclick = async () => {
+    ok.disabled = true;
+    try {
+      const r = await POST('/registros/' + id + '/renegociar', dados());
+      mostrarConfirmacao('Dívida renegociada', 'Novo total <b>' + moeda(r.total) + '</b> em <b>' + r.parcelas + 'x</b>. As parcelas antigas em aberto foram substituídas.', r.confirmacao);
+      toast('Dívida renegociada.', 'ok');
+      App.recarregar();
+    } catch (e) { falha(e); ok.disabled = false; }
+  };
+}
 function editarRegistro(id) {
   const reg = (window.__reg || {})[id] || {};
   const desc = reg.descricao || '', obs = reg.observacoes || '';
@@ -443,6 +612,7 @@ function editarRegistro(id) {
 }
 const NOMES_ACAO = {
   registro_criado: 'Registro criado', registro_editado: 'Registro editado', registro_cancelado: 'Registro cancelado',
+  registro_abatido: 'Valor abatido', registro_renegociado: 'Dívida renegociada',
   parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
 };
 async function historicoRegistro(id) {
@@ -452,7 +622,9 @@ async function historicoRegistro(id) {
       titulo: 'Histórico do registro', subtitulo: esc(r.descricao), largo: true,
       corpo: r.historico.length ? '<div class="lista">' + r.historico.map(h => {
         let d = {}; try { d = JSON.parse(h.detalhes || '{}'); } catch (e) {}
-        const extra = d.valor && typeof d.valor === 'object' ? 'Parcela ' + d.parcela + ': ' + moeda(d.valor.de) + ' → ' + moeda(d.valor.para) + (d.vencimento && d.vencimento.de !== d.vencimento.para ? ', ' + dataBR(d.vencimento.de) + ' → ' + dataBR(d.vencimento.para) : '')
+        const extra = h.acao === 'registro_abatido' ? moeda(d.valor) + (d.desconto ? ' + desconto ' + moeda(d.desconto) : '') + (d.saldo ? ' · saldo ' + moeda(d.saldo.de) + ' → ' + moeda(d.saldo.para) : '')
+          : h.acao === 'registro_renegociado' ? 'Saldo ' + moeda(d.saldo) + (d.acrescimo_pct ? ' + ' + pct(d.acrescimo_pct) : '') + (d.desconto ? ' − ' + moeda(d.desconto) : '') + ' = ' + moeda(d.total) + ' em ' + d.parcelas + 'x'
+          : d.valor && typeof d.valor === 'object' ? 'Parcela ' + d.parcela + ': ' + moeda(d.valor.de) + ' → ' + moeda(d.valor.para) + (d.vencimento && d.vencimento.de !== d.vencimento.para ? ', ' + dataBR(d.vencimento.de) + ' → ' + dataBR(d.vencimento.para) : '')
           : d.parcela ? 'Parcela ' + d.parcela + ' · ' + moeda(d.valor) + (d.forma ? ' · ' + d.forma : '') : d.total ? moeda(d.total) + (d.parcelas ? ' em ' + d.parcelas + 'x' : '') : '';
         return `<div class="item"><div><div class="item-titulo">${NOMES_ACAO[h.acao] || esc(h.acao)}</div>
           <div class="item-sub"><span>${dataHora(h.criado_em)}</span><span>por ${esc(h.user_nome || '—')}</span>${extra ? '<span>' + esc(extra) + '</span>' : ''}${d.motivo ? '<span>Motivo: ' + esc(d.motivo) + '</span>' : ''}</div></div></div>`;

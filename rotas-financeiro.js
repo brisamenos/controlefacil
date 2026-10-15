@@ -49,15 +49,27 @@ router.get('/caixa', (req, res) => res.json(saldoCaixa(req.user.id)));
 // Todas as movimentações de dinheiro, desde o começo (base do livro-caixa)
 function movimentosTodos(adminId, auto) {
   const mov = [];
-  db.prepare(`SELECT p.id, p.valor, p.data_pagamento AS data, p.forma, p.registrado_em, c.nome AS cliente, r.descricao, i.numero, r.qtd_parcelas,
+  db.prepare(`SELECT p.id, p.record_id, p.valor, p.data_pagamento AS data, p.forma, p.registrado_em, c.nome AS cliente, r.descricao, i.numero, r.qtd_parcelas,
                      c.id AS client_id, r.total AS r_total, r.acrescimo AS r_acr
               FROM payments p JOIN clients c ON c.id = p.client_id JOIN records r ON r.id = p.record_id JOIN installments i ON i.id = p.installment_id
               WHERE p.admin_id = ?`).all(adminId)
     .forEach(p => {
-      const juros = p.r_total > 0 && p.r_acr > 0 ? r2(p.valor * p.r_acr / p.r_total) : 0;
       mov.push({ origem: 'pagamento', tipo: 'recebido', id: p.id, data: p.data, valor: p.valor, ordem: p.registrado_em, forma: p.forma || 'Outro',
-        juros, capital: r2(p.valor - juros), titulo: p.cliente, client_id: p.client_id,
+        record_id: p.record_id, r_total: p.r_total, r_acr: p.r_acr, titulo: p.cliente, client_id: p.client_id,
         detalhe: p.descricao + ' · parcela ' + p.numero + '/' + p.qtd_parcelas + (p.forma ? ' · ' + p.forma : '') });
+    });
+  // Lucro (juros) de cada pagamento, acumulado por registro: a soma fecha no centavo com o acréscimo total
+  const porReg = {};
+  mov.filter(m => m.origem === 'pagamento').sort((a, b) => a.data < b.data ? -1 : a.data > b.data ? 1 : String(a.ordem).localeCompare(String(b.ordem)) || a.id - b.id)
+    .forEach(m => {
+      const acum = porReg[m.record_id] || { pago: 0, juros: 0 };
+      const fr = m.r_total > 0 && m.r_acr > 0 ? m.r_acr / m.r_total : 0;
+      const pagoC = Math.round(acum.pago * 100) + Math.round(m.valor * 100);
+      const jurosAcum = Math.round(pagoC * fr);
+      m.juros = (jurosAcum - Math.round(acum.juros * 100)) / 100;
+      m.capital = r2(m.valor - m.juros);
+      porReg[m.record_id] = { pago: pagoC / 100, juros: jurosAcum / 100 };
+      delete m.r_total; delete m.r_acr;
     });
   if (auto) {
     db.prepare(`SELECT r.id, r.valor_principal, ${DATA_LOCAL('r.criado_em')} AS data, r.criado_em, r.descricao, r.percentual, c.nome AS cliente, c.id AS client_id
