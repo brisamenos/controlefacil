@@ -37,32 +37,92 @@ function totais(adminId, de, ate) {
   };
 }
 
+// Saldo em caixa: tudo o que entrou menos tudo o que saiu, desde o começo
+function saldoCaixa(adminId) {
+  const t = totais(adminId, '0000-01-01', '9999-12-31');
+  return { saldo: t.saldo, entradas: t.entradas, saidas: t.saidas, automatico: t.investimento.automatico };
+}
+
+// GET /api/financeiro/caixa — usado na tela de novo registro
+router.get('/caixa', (req, res) => res.json(saldoCaixa(req.user.id)));
+
+// Todas as movimentações de dinheiro, desde o começo (base do livro-caixa)
+function movimentosTodos(adminId, auto) {
+  const mov = [];
+  db.prepare(`SELECT p.id, p.valor, p.data_pagamento AS data, p.forma, p.registrado_em, c.nome AS cliente, r.descricao, i.numero, r.qtd_parcelas,
+                     c.id AS client_id, r.total AS r_total, r.acrescimo AS r_acr
+              FROM payments p JOIN clients c ON c.id = p.client_id JOIN records r ON r.id = p.record_id JOIN installments i ON i.id = p.installment_id
+              WHERE p.admin_id = ?`).all(adminId)
+    .forEach(p => {
+      const juros = p.r_total > 0 && p.r_acr > 0 ? r2(p.valor * p.r_acr / p.r_total) : 0;
+      mov.push({ origem: 'pagamento', tipo: 'recebido', id: p.id, data: p.data, valor: p.valor, ordem: p.registrado_em, forma: p.forma || 'Outro',
+        juros, capital: r2(p.valor - juros), titulo: p.cliente, client_id: p.client_id,
+        detalhe: p.descricao + ' · parcela ' + p.numero + '/' + p.qtd_parcelas + (p.forma ? ' · ' + p.forma : '') });
+    });
+  if (auto) {
+    db.prepare(`SELECT r.id, r.valor_principal, ${DATA_LOCAL('r.criado_em')} AS data, r.criado_em, r.descricao, r.percentual, c.nome AS cliente, c.id AS client_id
+                FROM records r JOIN clients c ON c.id = r.client_id WHERE r.admin_id = ? AND r.status <> 'cancelado'`).all(adminId)
+      .forEach(r => mov.push({ origem: 'registro', tipo: 'investimento', id: r.id, data: r.data, valor: r.valor_principal, ordem: r.criado_em,
+        titulo: r.cliente, client_id: r.client_id, detalhe: 'Novo registro · ' + r.descricao + (r.percentual ? ' · ' + String(r.percentual).replace('.', ',') + '%' : '') }));
+  }
+  db.prepare(`SELECT * FROM lancamentos WHERE admin_id = ?`).all(adminId)
+    .forEach(l => mov.push({ origem: 'lancamento', tipo: l.tipo, id: l.id, data: l.data, valor: l.valor, ordem: l.criado_em,
+      titulo: l.descricao, detalhe: [l.categoria, l.forma].filter(Boolean).join(' · '), categoria: l.categoria, forma: l.forma, descricao: l.descricao }));
+  // ordem do livro-caixa: data, depois a hora em que foi lançado
+  const PRI = { extra: 0, investimento: 1, despesa: 2, recebido: 3 }; // desempate no mesmo segundo
+  mov.sort((a, b) => a.data < b.data ? -1 : a.data > b.data ? 1 : String(a.ordem).localeCompare(String(b.ordem)) || (PRI[a.tipo] - PRI[b.tipo]) || (a.id - b.id));
+  let saldo = 0;
+  mov.forEach(m => { saldo = r2(saldo + (m.tipo === 'recebido' || m.tipo === 'extra' ? m.valor : -m.valor)); m.saldo_apos = saldo; });
+  return mov;
+}
+
+// Quanto ainda vai entrar (parcelas em aberto de registros ativos)
+function aReceber(adminId) {
+  const h = hoje();
+  const dia = n => { const d = new Date(h + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const base = `FROM installments i JOIN records r ON r.id = i.record_id
+                WHERE i.admin_id = ? AND r.status = 'ativo' AND i.status IN ('pendente','parcial')`;
+  const soma = (cond, ...p) => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(i.valor - i.valor_pago),0) v,
+      COALESCE(SUM(CASE WHEN r.total > 0 THEN (i.valor - i.valor_pago) * r.acrescimo / r.total ELSE 0 END),0) juros ${base} ${cond}`).get(adminId, ...p);
+  const f = x => ({ total: r2(x.v), qtd: x.n, juros: r2(x.juros) });
+  const agenda = db.prepare(`SELECT i.vencimento AS dia, COUNT(*) qtd, COALESCE(SUM(i.valor - i.valor_pago),0) total ${base}
+                             AND i.vencimento BETWEEN ? AND ? GROUP BY i.vencimento ORDER BY i.vencimento`).all(adminId, h, dia(30))
+    .map(a => ({ ...a, total: r2(a.total) }));
+  return {
+    hoje: f(soma('AND i.vencimento = ?', h)), amanha: f(soma('AND i.vencimento = ?', dia(1))),
+    dias7: f(soma('AND i.vencimento BETWEEN ? AND ?', h, dia(6))), dias30: f(soma('AND i.vencimento BETWEEN ? AND ?', h, dia(29))),
+    atrasado: f(soma('AND i.vencimento < ?', h)), total: f(soma('')), agenda,
+  };
+}
+
 // GET /api/financeiro?de=&ate=
 router.get('/', (req, res) => {
   const { de, ate } = periodo(req.query);
   const id = req.user.id;
   const t = totais(id, de, ate);
-  const mov = [];
-  db.prepare(`SELECT p.id, p.valor, p.data_pagamento AS data, p.forma, p.registrado_em, c.nome AS cliente, r.descricao, i.numero, r.qtd_parcelas, c.id AS client_id
-              FROM payments p JOIN clients c ON c.id = p.client_id JOIN records r ON r.id = p.record_id JOIN installments i ON i.id = p.installment_id
-              WHERE p.admin_id = ? AND p.data_pagamento BETWEEN ? AND ? ORDER BY p.data_pagamento DESC, p.id DESC LIMIT 400`).all(id, de, ate)
-    .forEach(p => mov.push({ origem: 'pagamento', tipo: 'recebido', id: p.id, data: p.data, valor: p.valor, ordem: p.registrado_em,
-      titulo: p.cliente, detalhe: p.descricao + ' · parcela ' + p.numero + '/' + p.qtd_parcelas + (p.forma ? ' · ' + p.forma : ''), client_id: p.client_id }));
-  if (t.investimento.automatico) {
-    db.prepare(`SELECT r.id, r.valor_principal, ${DATA_LOCAL('r.criado_em')} AS data, r.criado_em, r.descricao, c.nome AS cliente, c.id AS client_id
-                FROM records r JOIN clients c ON c.id = r.client_id
-                WHERE r.admin_id = ? AND r.status <> 'cancelado' AND ${DATA_LOCAL('r.criado_em')} BETWEEN ? AND ? ORDER BY r.criado_em DESC LIMIT 400`).all(id, de, ate)
-      .forEach(r => mov.push({ origem: 'registro', tipo: 'investimento', id: r.id, data: r.data, valor: r.valor_principal, ordem: r.criado_em,
-        titulo: r.cliente, detalhe: 'Novo registro · ' + r.descricao, client_id: r.client_id }));
-  }
-  db.prepare(`SELECT l.*, u.nome AS autor FROM lancamentos l LEFT JOIN users u ON u.id = l.criado_por
-              WHERE l.admin_id = ? AND l.data BETWEEN ? AND ? ORDER BY l.data DESC, l.id DESC LIMIT 400`).all(id, de, ate)
-    .forEach(l => mov.push({ origem: 'lancamento', tipo: l.tipo, id: l.id, data: l.data, valor: l.valor, ordem: l.criado_em,
-      titulo: l.descricao, detalhe: [l.categoria, l.forma].filter(Boolean).join(' · '), categoria: l.categoria, forma: l.forma, descricao: l.descricao }));
-  mov.sort((a, b) => a.data < b.data ? 1 : a.data > b.data ? -1 : String(b.ordem).localeCompare(String(a.ordem)));
+  const todos = movimentosTodos(id, t.investimento.automatico);
+  const doPeriodo = todos.filter(m => m.data >= de && m.data <= ate);
+  // recebido dividido em capital (dinheiro voltando) e lucro (juros), e por forma
+  const recs = doPeriodo.filter(m => m.tipo === 'recebido');
+  t.recebido.juros = r2(recs.reduce((x, m) => x + m.juros, 0));
+  t.recebido.capital = r2(t.recebido.total - t.recebido.juros);
+  const formas = {};
+  recs.forEach(m => { formas[m.forma] = formas[m.forma] || { forma: m.forma, total: 0, qtd: 0 }; formas[m.forma].total = r2(formas[m.forma].total + m.valor); formas[m.forma].qtd++; });
+  const anterior = todos.filter(m => m.data < de);
+  const saldoInicial = anterior.length ? anterior[anterior.length - 1].saldo_apos : 0;
+  const ultimo = todos[todos.length - 1];
+  // conferência: o saldo do livro-caixa tem que bater com a soma dos totais
+  const caixa = saldoCaixa(id);
+  const confere = Math.abs((ultimo ? ultimo.saldo_apos : 0) - caixa.saldo) < 0.01 &&
+                  Math.abs(saldoInicial + t.saldo - (doPeriodo.length ? doPeriodo[doPeriodo.length - 1].saldo_apos : saldoInicial)) < 0.01;
   let cats = [];
   try { cats = JSON.parse(getConfig(id).categorias_despesa); } catch (e) {}
-  res.json({ de, ate, totais: t, movimentos: mov, categorias: cats });
+  res.json({
+    de, ate, totais: t, caixa, a_receber: aReceber(id),
+    recebido_por_forma: Object.values(formas).sort((a, b) => b.total - a.total),
+    saldo_inicial: saldoInicial, saldo_final: r2(saldoInicial + t.saldo), confere,
+    movimentos: doPeriodo.reverse().slice(0, 1000), categorias: cats,
+  });
 });
 
 function validar(b) {

@@ -467,6 +467,8 @@ async function historicoRegistro(id) {
 Admin.novo = async el => {
   await carregarConfig();
   const q = parametros();
+  let caixa = null;
+  if (pode('financeiro')) { try { caixa = await GET('/financeiro/caixa'); } catch (e) {} }
   const amanha = somaDias(hojeISO(), 1);
   const st = {
     cliente: null, descricao: '', valor: 0, percentual: CFG.percentuais[1] ?? CFG.percentuais[0] ?? 0,
@@ -656,6 +658,15 @@ Admin.novo = async el => {
 
   const desenharResumo = () => {
     const s = st.sim, soma = st.parcelas.reduce((t, p) => t + p.valor, 0);
+    let caixaHtml = '';
+    if (caixa && caixa.automatico) {
+      const usa = editId ? s.valor_principal - (reg.valor_principal || 0) : s.valor_principal;
+      const fica = caixa.saldo - usa;
+      caixaHtml = `<div class="conta" style="margin-top:12px;padding-top:8px;border-top:1px solid var(--linha)">
+        <div><span>Saldo em caixa agora</span><b>${moeda(caixa.saldo)}</b></div>
+        <div><span>Fica no caixa depois</span><b style="color:${fica < 0 ? 'var(--margem)' : 'var(--verde)'}">${fica < 0 ? '− ' + moeda(-fica) : moeda(fica)}</b></div></div>
+        ${fica < 0 ? '<div class="aviso" style="margin-bottom:0">O valor é maior que o seu saldo em caixa. Você pode salvar assim mesmo.</div>' : ''}`;
+    }
     const livres = st.parcelas.filter(p => !p.fixa), nFix = st.parcelas.length - livres.length;
     const ref = livres.length ? livres : st.parcelas;
     const iguais = ref.every(p => Math.abs(p.valor - ref[0].valor) < 0.005);
@@ -667,6 +678,7 @@ Admin.novo = async el => {
       <div class="total"><span style="color:inherit">Total</span><span>${moeda(soma)}</span></div></div>
       <p style="margin:10px 0 0" class="forte">${nFix ? nFix + ' mantida(s) + ' : ''}${ref.length}x de ${moeda(ref[0].valor)}${ultimoDif ? ' <span class="muted" style="font-weight:500">(última de ' + moeda(ref.at(-1).valor) + ')</span>' : iguais ? '' : ' <span class="muted" style="font-weight:500">(valores ajustados)</span>'}</p>
       <p class="muted" style="margin:2px 0 0">${FREQ[s.frequencia]}${s.frequencia === 'diario' && s.config.dias_cobranca && s.config.dias_cobranca.length < 7 ? ', ' + textoDias(s.config.dias_cobranca, true) : ''} · de ${dataBR(st.parcelas[0].vencimento)} a ${dataBR(st.parcelas.at(-1).vencimento)}</p>
+      ${caixaHtml}
       ${s.fixas_qtd ? '<div class="aviso info" style="margin-bottom:0">' + s.fixas_qtd + ' parcela(s) com pagamento mantida(s) (' + moeda(s.ja_pago) + ' já recebido). As outras foram recalculadas.</div>' : ''}
       ${st.editado && !s.fixas_qtd && Math.abs(soma - s.total) > 0.004 ? '<div class="aviso">A soma das parcelas (' + moeda(soma) + ') é diferente do total calculado (' + moeda(s.total) + '). Será salvo o valor das parcelas.</div>' : ''}`;
   };
@@ -935,8 +947,8 @@ function modalLancamento(tipo, l, categorias, aoSalvar) {
     rodape: (l ? '<button class="btn btn-perigo" id="lc-del" style="margin-right:auto">Excluir</button>' : '') + '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="lc-ok">Salvar</button>',
   });
   let categoria = l ? l.categoria : '';
-  const ajuda = { investimento: 'Dinheiro que saiu para emprestar, comprar mercadoria ou aplicar no negócio.', extra: 'Outras entradas de dinheiro que não são parcelas de clientes.', despesa: 'Gastos do negócio: combustível, aluguel, contas, salários…' };
-  const placeholder = { investimento: 'Ex.: Compra de mercadoria', extra: 'Ex.: Venda à vista', despesa: 'Ex.: Gasolina da moto' };
+  const ajuda = { investimento: 'Dinheiro que saiu para emprestar, comprar mercadoria ou aplicar no negócio.', extra: 'Dinheiro que entra no caixa sem ser parcela de cliente: o dinheiro que você colocou para emprestar, uma venda à vista…', despesa: 'Gastos do negócio: combustível, aluguel, contas, salários…' };
+  const placeholder = { investimento: 'Ex.: Compra de mercadoria', extra: 'Ex.: Dinheiro colocado no caixa', despesa: 'Ex.: Gasolina da moto' };
   const desenhar = () => {
     m.querySelectorAll('#lc-tipos button').forEach(b => b.classList.toggle('sel', b.dataset.t === tp));
     m.querySelector('#lc-ajuda').textContent = ajuda[tp];
@@ -978,14 +990,17 @@ Admin.financeiro = async el => {
   el.innerHTML = `<div class="topo"><div><h1>Financeiro</h1><p id="fn-per">&nbsp;</p></div></div>
     <div class="abas" id="fn-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === est.per ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
     <div class="linha-campos" id="fn-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="fn-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="fn-ate" value="${h}"></div></div>
+    <div id="fn-caixa"></div>
+    <div class="painel" id="fn-receber" style="margin-bottom:16px"></div>
     <div class="fin-botoes">
       <button class="btn btn-claro" data-novo="investimento" style="color:var(--tinta)"><b>↑</b>Investimento</button>
       <button class="btn btn-claro" data-novo="extra" style="color:#0E7C77"><b>+</b>Extra</button>
       <button class="btn btn-claro" data-novo="despesa" style="color:var(--margem)"><b>−</b>Despesa</button>
     </div>
     <div class="grade grade-2" style="align-items:start">
-      <div id="fn-extrato"></div>
-      <div class="painel"><div class="painel-topo"><h2>Movimentações</h2><small id="fn-qtd"></small></div>
+      <div><div id="fn-extrato"></div><div id="fn-formas"></div></div>
+      <div class="painel"><div class="painel-topo"><h2>Livro-caixa</h2><small id="fn-qtd"></small></div>
+        <div id="fn-conf"></div>
         <div class="abas" id="fn-filtro" style="margin-bottom:4px">${[['todos', 'Todas'], ['entradas', 'Entradas'], ['saidas', 'Saídas'], ['recebido', 'Recebido'], ['investimento', 'Investimento'], ['extra', 'Extra'], ['despesa', 'Despesa']].map(([k, t]) => `<button data-f="${k}" class="${k === 'todos' ? 'sel' : ''}">${t}</button>`).join('')}</div>
         <div class="lista" id="fn-lista"></div></div>
     </div>
@@ -999,15 +1014,52 @@ Admin.financeiro = async el => {
     const subInv = inv.automatico
       ? `${inv.qtd_registros} registro(s)${inv.qtd_manual ? ' + ' + inv.qtd_manual + ' lançamento(s)' : ''}`
       : `${inv.qtd_manual} lançamento(s)`;
+    const cx = est.dados.caixa;
+    const fmtS = v => v < 0 ? '− ' + moeda(-v) : moeda(v);
+    $('#fn-caixa').innerHTML = `<div class="faixa-hoje faixa-caixa">
+      <div><span>Saldo em caixa agora</span><strong>${fmtS(cx.saldo)}</strong><small>Tudo o que entrou menos tudo o que saiu, desde o começo</small></div>
+      <div class="secundario"><span>Entrou no total</span><strong>${moeda(cx.entradas)}</strong></div>
+      <div class="secundario"><span>Saiu no total</span><strong>${moeda(cx.saidas)}</strong></div></div>`;
     $('#fn-extrato').innerHTML = `<div class="extrato">
-      ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) de clientes')}
+      ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}
       ${linha('extra', t.extra.total, t.extra.qtd + ' lançamento(s)')}
       ${linha('despesa', t.despesa.total, t.despesa.qtd + ' lançamento(s)')}
-      <div class="extrato-saldo ${t.saldo >= 0 ? 'pos' : 'neg'}"><div><b>Saldo</b><span>Recebido + Extra − Investimento − Despesa</span></div><span class="val">${t.saldo < 0 ? '− ' + moeda(-t.saldo) : moeda(t.saldo)}</span></div>
+      <div class="extrato-linha"><span class="ic t-extra">%</span><span class="rot"><b>Lucro dos juros recebido</b><small>Parte do recebido que é acréscimo (juros)</small></span><span class="val v-extra">${moeda(t.recebido.juros)}</span></div>
+      <div class="extrato-saldo ${t.saldo >= 0 ? 'pos' : 'neg'}"><div><b>Saldo do período</b><span>Recebido + Extra − Investimento − Despesa</span></div><span class="val">${t.saldo < 0 ? '− ' + moeda(-t.saldo) : moeda(t.saldo)}</span></div>
     </div>`;
   };
+  const desenharReceber = () => {
+    const r = est.dados.a_receber;
+    const card = (rot, x, cls) => `<div class="indicador ${cls || ''}"><span>${rot}</span><strong>${moeda(x.total)}</strong><small>${x.qtd} parcela(s)${x.juros ? ' · ' + moeda(x.juros) + ' de lucro' : ''}</small></div>`;
+    const sem = (d) => new Date(d + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
+    const amanhaISO = somaDias(hojeISO(), 1);
+    $('#fn-receber').innerHTML = `<div class="painel-topo"><h2>A receber</h2><small>Total em aberto: <b>${moeda(r.total.total)}</b></small></div>
+      <div class="grade grade-3">${card('Hoje', r.hoje)}${card('Amanhã', r.amanha)}${card('Próximos 7 dias', r.dias7)}${card('Próximos 30 dias', r.dias30)}${card('Em atraso', r.atrasado, 'alerta')}${card('Lucro ainda a receber', { total: r.total.juros, qtd: r.total.qtd }, 'bom')}</div>
+      ${r.agenda.length ? `<h3 class="mt" style="margin-bottom:6px">Agenda de recebimentos</h3><div class="lista">${r.agenda.map(a => `<div class="item clicavel" data-dia="${a.dia}">
+        <div><div class="item-titulo">${a.dia === hojeISO() ? 'Hoje' : a.dia === amanhaISO ? 'Amanhã' : dataBR(a.dia)} <span class="muted" style="font-weight:500;font-size:13px">${sem(a.dia)}</span></div>
+        <div class="item-sub"><span>${a.qtd} parcela(s)</span></div></div><div class="item-valor">${moeda(a.total)}</div></div>`).join('')}</div>` : '<div class="vazio">Nenhuma parcela para os próximos 30 dias.</div>'}`;
+    el.querySelectorAll('[data-dia]').forEach(d => d.onclick = () => verDiaReceber(d.dataset.dia));
+  };
+  const verDiaReceber = async dia => {
+    try {
+      const r = await GET('/parcelas?aba=todas&de=' + dia + '&ate=' + dia);
+      const lista = r.parcelas.filter(p => (p.status === 'pendente' || p.status === 'parcial') && p.registro_status === 'ativo');
+      const m = abrirModal({ titulo: 'Receber em ' + dataBR(dia), subtitulo: lista.length + ' parcela(s) · ' + moeda(lista.reduce((t, p) => t + p.valor - p.valor_pago, 0)),
+        corpo: '<div class="lista">' + (lista.map(p => linhaCobranca(p)).join('') || '<div class="vazio">Nada em aberto.</div>') + '</div>', largo: true,
+        rodape: '<button class="btn btn-claro" data-fechar>Fechar</button>' });
+    } catch (e) { falha(e); }
+  };
+  const desenharFormas = () => {
+    const f = est.dados.recebido_por_forma;
+    $('#fn-formas').innerHTML = f.length ? `<div class="painel mt"><h3 style="margin-bottom:8px">Recebido por tipo</h3><div class="lista">${f.map(x => `<div class="item"><div><div class="item-titulo">${esc(x.forma)}</div><div class="item-sub"><span>${x.qtd} pagamento(s)</span></div></div><div class="item-valor v-recebido">${moeda(x.total)}</div></div>`).join('')}</div></div>` : '';
+  };
   const desenharLista = () => {
+    const d = est.dados;
+    $('#fn-conf').innerHTML = `<div class="conta" style="margin-bottom:8px;font-size:14px">
+      <div><span>Saldo no início do período</span><b>${d.saldo_inicial < 0 ? '− ' + moeda(-d.saldo_inicial) : moeda(d.saldo_inicial)}</b></div>
+      <div><span>Saldo no fim do período</span><b>${d.saldo_final < 0 ? '− ' + moeda(-d.saldo_final) : moeda(d.saldo_final)}</b></div></div>
+      <div class="aviso ${d.confere ? 'info' : 'erro'}" style="font-size:13px">${d.confere ? '✓ Conferido: o livro-caixa bate com os totais.' : '⚠ O livro-caixa não bateu com os totais. Faça um backup e fale com o suporte.'}</div>`;
     const f = est.filtro, mov = est.dados.movimentos.filter(x => f === 'todos' || x.tipo === f ||
       (f === 'entradas' && (x.tipo === 'recebido' || x.tipo === 'extra')) || (f === 'saidas' && (x.tipo === 'investimento' || x.tipo === 'despesa')));
     $('#fn-qtd').textContent = mov.length + ' item(ns)';
@@ -1018,7 +1070,7 @@ Admin.financeiro = async el => {
       return `<div class="item clicavel" ${clic}><div style="min-width:0;display:flex;gap:12px;align-items:center">
         <span class="ic t-${x.tipo}" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:800;flex-shrink:0">${TIPO_FIN[x.tipo].ic}</span>
         <div style="min-width:0"><div class="item-titulo">${esc(x.titulo)}</div><div class="item-sub"><span>${dataBR(x.data)}</span><span>${TIPO_FIN[x.tipo].t}</span>${x.detalhe ? '<span>' + esc(x.detalhe) + '</span>' : ''}</div></div></div>
-        <div class="item-valor v-${x.tipo}">${TIPO_FIN[x.tipo].sinal} ${moeda(x.valor)}</div></div>`;
+        <div class="item-valor v-${x.tipo}">${TIPO_FIN[x.tipo].sinal} ${moeda(x.valor)}<div class="muted" style="font-size:11.5px;font-weight:500;font-family:var(--f-texto)">caixa: ${x.saldo_apos < 0 ? '− ' + moeda(-x.saldo_apos) : moeda(x.saldo_apos)}</div></div></div>`;
     }).join('') : '<div class="vazio">Nenhuma movimentação neste período.</div>';
   };
   const desenharAjustes = () => {
@@ -1041,7 +1093,7 @@ Admin.financeiro = async el => {
     try {
       est.dados = await GET('/financeiro?de=' + est.de + '&ate=' + est.ate);
       $('#fn-per').textContent = est.de === est.ate ? dataBR(est.de) : dataBR(est.de) + ' a ' + dataBR(est.ate);
-      desenharExtrato(); desenharLista(); desenharAjustes();
+      desenharExtrato(); desenharReceber(); desenharFormas(); desenharLista(); desenharAjustes();
     } catch (e) { falha(e); }
   };
   window.editarLancamento = id => modalLancamento(null, window.__lanc[id], est.dados.categorias, carregar);

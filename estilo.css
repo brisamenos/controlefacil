@@ -424,3 +424,6 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 
 .grade > * { min-width: 0; }
 .extrato-linha .rot small { display: block; overflow-wrap: anywhere; }
+.faixa-caixa { grid-template-columns: 1.4fr 1fr 1fr; margin-bottom: 16px; }
+.faixa-caixa .secundario strong { white-space: nowrap; }
+@media (max-width: 640px) { .faixa-caixa { grid-template-columns: 1fr 1fr; } }
