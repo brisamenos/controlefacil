@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { db } = require('./db');
 const { ipDe } = require('./util');
 
-const PERMISSOES = ['clientes', 'registros', 'pagamentos', 'relatorios', 'whatsapp', 'configuracoes'];
+const PERMISSOES = ['clientes', 'registros', 'pagamentos', 'financeiro', 'relatorios', 'whatsapp', 'configuracoes'];
 const PERMISSOES_PADRAO = Object.fromEntries(PERMISSOES.map(p => [p, true]));
 
 function lerPermissoes(txt) {

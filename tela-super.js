@@ -2,7 +2,7 @@
 'use strict';
 
 const Super = {};
-const PERM_NOMES = { clientes: 'Clientes', registros: 'Registros', pagamentos: 'Pagamentos', relatorios: 'Relatórios', whatsapp: 'WhatsApp', configuracoes: 'Configurações' };
+const PERM_NOMES = { clientes: 'Clientes', registros: 'Registros', pagamentos: 'Pagamentos', financeiro: 'Financeiro', relatorios: 'Relatórios', whatsapp: 'WhatsApp', configuracoes: 'Configurações' };
 
 function seloAtivo(a) { return a.ativo ? '<span class="selo s-pago">Ativo</span>' : '<span class="selo s-atrasado">Bloqueado</span>'; }
 
@@ -135,6 +135,7 @@ const ACOES_AUDIT = {
   registro_criado: 'Registro criado', registro_editado: 'Registro editado', registro_cancelado: 'Registro cancelado',
   parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
   config_alterada: 'Configurações alteradas', modelo_alterado: 'Modelo de mensagem alterado', config_sistema: 'Configuração do sistema',
+  lancamento_criado: 'Lançamento financeiro criado', lancamento_editado: 'Lançamento financeiro editado', lancamento_excluido: 'Lançamento financeiro excluído',
   backup_criado: 'Backup criado', backup_baixado: 'Backup baixado', backup_exportado: 'Backup exportado',
   backup_telegram: 'Backup enviado ao Telegram', backup_importado: 'Backup importado', telegram_configurado: 'Telegram configurado',
 };

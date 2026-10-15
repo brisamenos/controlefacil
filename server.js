@@ -26,6 +26,7 @@ app.use('/api/super',     require('./rotas-super'));
 app.use('/api/clientes',  require('./rotas-clientes'));
 app.use('/api/registros', require('./rotas-registros'));
 app.use('/api/parcelas',  require('./rotas-parcelas'));
+app.use('/api/financeiro', require('./rotas-financeiro'));
 app.use('/api',           require('./rotas-painel'));
 app.use('/api', (req, res) => res.status(404).json({ erro: 'Rota não encontrada.' }));
 

@@ -104,7 +104,7 @@ h3 { font-size: 16px; font-weight: 650; }
 .grade-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
 .grade-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
 @media (max-width: 980px) { .grade-4 { grid-template-columns: repeat(2, minmax(0,1fr)); } .grade-3 { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-@media (max-width: 640px) { .grade-2 { grid-template-columns: 1fr; } .grade-3, .grade-4 { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; } }
+@media (max-width: 640px) { .grade-2 { grid-template-columns: minmax(0, 1fr); } .grade-3, .grade-4 { grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; } }
 
 .indicador { background: var(--papel); border: 1px solid var(--linha); border-radius: var(--r); padding: 14px 16px; }
 .indicador span { display: block; font-size: 13px; color: var(--lapis); }
@@ -390,3 +390,37 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 .dias-resumo { font-size: 13px; color: var(--lapis); margin-top: 8px; }
 .dias-resumo b { color: var(--grafite); }
 @media (max-width: 380px) { .dia-sem { font-size: 12px; padding: 8px 0 6px; } }
+
+/* Financeiro */
+.extrato { background: var(--papel); border: 1px solid var(--linha); border-radius: var(--r); overflow: hidden; }
+.extrato-linha { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--pauta); }
+.extrato-linha:nth-child(even) { background: #F8F9FB; }
+.extrato-linha .ic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; flex-shrink: 0; font-weight: 800; font-size: 18px; }
+.extrato-linha .rot { flex: 1; min-width: 0; }
+.extrato-linha .rot b { display: block; font-size: 16px; }
+.extrato-linha .rot small { color: var(--lapis); font-size: 12.5px; }
+.extrato-linha .val { font-family: var(--f-display); font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.extrato-saldo { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 18px; color: #fff; }
+.extrato-saldo.pos { background: linear-gradient(135deg, #13875A, #0F6E49); }
+.extrato-saldo.neg { background: linear-gradient(135deg, #CF3D3D, #A92E2E); }
+.extrato-saldo span { font-size: 14px; opacity: .9; display: block; }
+.extrato-saldo b { font-family: var(--f-display); font-size: 21px; }
+.extrato-saldo .val { font-family: var(--f-display); font-weight: 800; font-size: 30px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.t-recebido { background: var(--verde-suave); color: var(--verde); }
+.t-investimento { background: var(--tinta-suave); color: var(--tinta); }
+.t-extra { background: #E2F5F4; color: #0E7C77; }
+.t-despesa { background: var(--margem-suave); color: var(--margem); }
+.v-recebido, .v-extra { color: var(--verde); }
+.v-investimento, .v-despesa { color: var(--margem); }
+.fin-botoes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.fin-botoes .btn { flex-direction: column; gap: 2px; min-height: 64px; font-size: 14px; padding: 8px; }
+.fin-botoes .btn b { font-size: 20px; line-height: 1; }
+.fin-tipos { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fin-tipos button { min-height: 52px; border-radius: var(--r-sm); border: 1.5px solid var(--linha); background: var(--papel); font-weight: 700; cursor: pointer; color: var(--lapis); }
+.fin-tipos button.sel.investimento { border-color: var(--tinta); background: var(--tinta-suave); color: var(--tinta); }
+.fin-tipos button.sel.extra { border-color: #0E7C77; background: #E2F5F4; color: #0E7C77; }
+.fin-tipos button.sel.despesa { border-color: var(--margem); background: var(--margem-suave); color: var(--margem); }
+@media (max-width: 640px) { .extrato-linha .val { font-size: 17px; } .extrato-saldo .val { font-size: 25px; } }
+
+.grade > * { min-width: 0; }
+.extrato-linha .rot small { display: block; overflow-wrap: anywhere; }

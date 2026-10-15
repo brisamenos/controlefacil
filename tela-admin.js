@@ -910,3 +910,149 @@ Admin.config = async el => {
     try { await PUT('/auth/senha', { atual: $('#cf-s1').value, nova: $('#cf-s2').value }); $('#cf-s1').value = $('#cf-s2').value = ''; toast('Senha alterada.', 'ok'); } catch (e) { falha(e); }
   };
 };
+
+/* ═══════════════════ FINANCEIRO ═══════════════════ */
+const TIPO_FIN = {
+  recebido: { t: 'Recebido', ic: '↓', sinal: '+' },
+  investimento: { t: 'Investimento', ic: '↑', sinal: '−' },
+  extra: { t: 'Extra', ic: '+', sinal: '+' },
+  despesa: { t: 'Despesa', ic: '−', sinal: '−' },
+};
+
+function modalLancamento(tipo, l, categorias, aoSalvar) {
+  let tp = l ? l.tipo : tipo;
+  const m = abrirModal({
+    titulo: l ? 'Editar lançamento' : 'Novo lançamento',
+    corpo: `<div class="fin-tipos" id="lc-tipos">${['investimento', 'extra', 'despesa'].map(k => `<button type="button" class="${k}${k === tp ? ' sel' : ''}" data-t="${k}">${TIPO_FIN[k].t}</button>`).join('')}</div>
+      <p class="muted" id="lc-ajuda" style="margin:10px 0 4px;font-size:13px"></p>
+      <div class="campo mt"><label>Valor</label><input class="entrada entrada-grande num" id="lc-valor" inputmode="decimal" placeholder="0,00" value="${l ? String(Number(l.valor).toFixed(2)).replace('.', ',') : ''}"></div>
+      <div class="campo"><label>Descrição</label><input class="entrada" id="lc-desc" maxlength="120" value="${esc(l ? l.descricao : '')}"></div>
+      <div class="chips" id="lc-cats" style="margin:-4px 0 14px"></div>
+      <div class="linha-campos">
+        <div class="campo"><label>Data</label><input class="entrada" type="date" id="lc-data" value="${l ? l.data : hojeISO()}"></div>
+        <div class="campo"><label>Forma <span class="muted" style="font-weight:500">(opcional)</span></label><select class="entrada" id="lc-forma"><option value="">—</option>${CFG.formas.map(f => `<option ${l && l.forma === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></div>
+      </div>`,
+    rodape: (l ? '<button class="btn btn-perigo" id="lc-del" style="margin-right:auto">Excluir</button>' : '') + '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn" id="lc-ok">Salvar</button>',
+  });
+  let categoria = l ? l.categoria : '';
+  const ajuda = { investimento: 'Dinheiro que saiu para emprestar, comprar mercadoria ou aplicar no negócio.', extra: 'Outras entradas de dinheiro que não são parcelas de clientes.', despesa: 'Gastos do negócio: combustível, aluguel, contas, salários…' };
+  const placeholder = { investimento: 'Ex.: Compra de mercadoria', extra: 'Ex.: Venda à vista', despesa: 'Ex.: Gasolina da moto' };
+  const desenhar = () => {
+    m.querySelectorAll('#lc-tipos button').forEach(b => b.classList.toggle('sel', b.dataset.t === tp));
+    m.querySelector('#lc-ajuda').textContent = ajuda[tp];
+    m.querySelector('#lc-desc').placeholder = placeholder[tp];
+    const box = m.querySelector('#lc-cats');
+    box.innerHTML = tp === 'despesa' ? categorias.map(c => `<button type="button" class="chip${c === categoria ? ' sel' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('') : '';
+    box.querySelectorAll('[data-c]').forEach(b => b.onclick = () => {
+      categoria = categoria === b.dataset.c ? '' : b.dataset.c;
+      const d = m.querySelector('#lc-desc'); if (!d.value.trim() && categoria) d.value = categoria;
+      desenhar();
+    });
+  };
+  m.querySelectorAll('#lc-tipos button').forEach(b => b.onclick = () => { tp = b.dataset.t; if (tp !== 'despesa') categoria = ''; desenhar(); });
+  desenhar();
+  if (window.innerWidth > 640) setTimeout(() => m.querySelector('#lc-valor').focus(), 60);
+  m.querySelector('#lc-ok').onclick = async e => {
+    const corpo = { tipo: tp, valor: lerMoeda(m.querySelector('#lc-valor').value), descricao: m.querySelector('#lc-desc').value,
+                    data: m.querySelector('#lc-data').value, forma: m.querySelector('#lc-forma').value, categoria };
+    e.currentTarget.disabled = true;
+    try {
+      if (l) await PUT('/financeiro/lancamentos/' + l.id, corpo); else await POST('/financeiro/lancamentos', corpo);
+      fecharModal(); toast(TIPO_FIN[tp].t + (tp === 'despesa' ? (l ? ' atualizada.' : ' lançada.') : (l ? ' atualizado.' : ' lançado.')), 'ok'); aoSalvar && aoSalvar();
+    } catch (err) { falha(err); e.currentTarget.disabled = false; }
+  };
+  const del = m.querySelector('#lc-del');
+  if (del) del.onclick = async () => {
+    fecharModal();
+    if (!await confirmar('Excluir lançamento', 'Excluir <b>' + esc(l.descricao) + '</b> de ' + moeda(l.valor) + '?', 'Excluir', true)) return;
+    try { await DEL('/financeiro/lancamentos/' + l.id); toast('Lançamento excluído.', 'ok'); aoSalvar && aoSalvar(); } catch (err) { falha(err); }
+  };
+}
+
+Admin.financeiro = async el => {
+  await carregarConfig();
+  const h = hojeISO(), iniMes = h.slice(0, 7) + '-01';
+  const antIni = (() => { const [a, m] = h.split('-').map(Number); return new Date(Date.UTC(a, m - 2, 1)).toISOString().slice(0, 10); })();
+  const periodos = { hoje: ['Hoje', h, h], d7: ['7 dias', somaDias(h, -6), h], mes: ['Este mês', iniMes, h], ant: ['Mês anterior', antIni, somaDias(iniMes, -1)], ano: ['Este ano', h.slice(0, 4) + '-01-01', h], pers: ['Personalizado'] };
+  const est = { per: 'mes', de: iniMes, ate: h, filtro: 'todos', dados: null };
+  el.innerHTML = `<div class="topo"><div><h1>Financeiro</h1><p id="fn-per">&nbsp;</p></div></div>
+    <div class="abas" id="fn-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === est.per ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
+    <div class="linha-campos" id="fn-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="fn-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="fn-ate" value="${h}"></div></div>
+    <div class="fin-botoes">
+      <button class="btn btn-claro" data-novo="investimento" style="color:var(--tinta)"><b>↑</b>Investimento</button>
+      <button class="btn btn-claro" data-novo="extra" style="color:#0E7C77"><b>+</b>Extra</button>
+      <button class="btn btn-claro" data-novo="despesa" style="color:var(--margem)"><b>−</b>Despesa</button>
+    </div>
+    <div class="grade grade-2" style="align-items:start">
+      <div id="fn-extrato"></div>
+      <div class="painel"><div class="painel-topo"><h2>Movimentações</h2><small id="fn-qtd"></small></div>
+        <div class="abas" id="fn-filtro" style="margin-bottom:4px">${[['todos', 'Todas'], ['entradas', 'Entradas'], ['saidas', 'Saídas'], ['recebido', 'Recebido'], ['investimento', 'Investimento'], ['extra', 'Extra'], ['despesa', 'Despesa']].map(([k, t]) => `<button data-f="${k}" class="${k === 'todos' ? 'sel' : ''}">${t}</button>`).join('')}</div>
+        <div class="lista" id="fn-lista"></div></div>
+    </div>
+    <div class="painel mt" id="fn-ajustes" style="max-width:640px"></div>`;
+  const $ = s => el.querySelector(s);
+
+  const linha = (tipo, valor, sub) => `<div class="extrato-linha"><span class="ic t-${tipo}">${TIPO_FIN[tipo].ic}</span>
+    <span class="rot"><b>Total ${TIPO_FIN[tipo].t}</b><small>${sub}</small></span><span class="val v-${tipo}">${moeda(valor)}</span></div>`;
+  const desenharExtrato = () => {
+    const t = est.dados.totais, inv = t.investimento;
+    const subInv = inv.automatico
+      ? `${inv.qtd_registros} registro(s)${inv.qtd_manual ? ' + ' + inv.qtd_manual + ' lançamento(s)' : ''}`
+      : `${inv.qtd_manual} lançamento(s)`;
+    $('#fn-extrato').innerHTML = `<div class="extrato">
+      ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) de clientes')}
+      ${linha('investimento', inv.total, subInv)}
+      ${linha('extra', t.extra.total, t.extra.qtd + ' lançamento(s)')}
+      ${linha('despesa', t.despesa.total, t.despesa.qtd + ' lançamento(s)')}
+      <div class="extrato-saldo ${t.saldo >= 0 ? 'pos' : 'neg'}"><div><b>Saldo</b><span>Recebido + Extra − Investimento − Despesa</span></div><span class="val">${t.saldo < 0 ? '− ' + moeda(-t.saldo) : moeda(t.saldo)}</span></div>
+    </div>`;
+  };
+  const desenharLista = () => {
+    const f = est.filtro, mov = est.dados.movimentos.filter(x => f === 'todos' || x.tipo === f ||
+      (f === 'entradas' && (x.tipo === 'recebido' || x.tipo === 'extra')) || (f === 'saidas' && (x.tipo === 'investimento' || x.tipo === 'despesa')));
+    $('#fn-qtd').textContent = mov.length + ' item(ns)';
+    window.__lanc = {};
+    $('#fn-lista').innerHTML = mov.length ? mov.map(x => {
+      if (x.origem === 'lancamento') window.__lanc[x.id] = { id: x.id, tipo: x.tipo, valor: x.valor, descricao: x.descricao, data: x.data, categoria: x.categoria, forma: x.forma };
+      const clic = x.origem === 'lancamento' ? `onclick="editarLancamento(${x.id})"` : x.client_id ? `onclick="location.hash='#/cliente/${x.client_id}'"` : '';
+      return `<div class="item clicavel" ${clic}><div style="min-width:0;display:flex;gap:12px;align-items:center">
+        <span class="ic t-${x.tipo}" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:800;flex-shrink:0">${TIPO_FIN[x.tipo].ic}</span>
+        <div style="min-width:0"><div class="item-titulo">${esc(x.titulo)}</div><div class="item-sub"><span>${dataBR(x.data)}</span><span>${TIPO_FIN[x.tipo].t}</span>${x.detalhe ? '<span>' + esc(x.detalhe) + '</span>' : ''}</div></div></div>
+        <div class="item-valor v-${x.tipo}">${TIPO_FIN[x.tipo].sinal} ${moeda(x.valor)}</div></div>`;
+    }).join('') : '<div class="vazio">Nenhuma movimentação neste período.</div>';
+  };
+  const desenharAjustes = () => {
+    const inv = est.dados.totais.investimento;
+    $('#fn-ajustes').innerHTML = `<h3 style="margin-bottom:6px">Ajustes do financeiro</h3>
+      <label class="check"><input type="checkbox" id="fn-auto" ${inv.automatico ? 'checked' : ''} ${pode('configuracoes') ? '' : 'disabled'}> Somar o valor principal de cada novo registro no Investimento</label>
+      <small class="muted">Ligado: cada venda ou empréstimo registrado entra como dinheiro investido. Desligue se você prefere lançar o investimento à mão.</small>
+      <div class="campo mt"><label>Categorias de despesa</label><input class="entrada" id="fn-cats" value="${esc(est.dados.categorias.join('; '))}" ${pode('configuracoes') ? '' : 'disabled'}><small>Separe com ponto e vírgula.</small></div>
+      ${pode('configuracoes') ? '<button class="btn btn-p btn-claro" id="fn-salvar-aj">Salvar ajustes</button>' : ''}`;
+    const b = $('#fn-salvar-aj');
+    if (b) b.onclick = async () => {
+      try {
+        await PUT('/financeiro/config', { investimento_auto: $('#fn-auto').checked, categorias: $('#fn-cats').value.split(';').map(x => x.trim()).filter(Boolean) });
+        toast('Ajustes salvos.', 'ok'); carregar();
+      } catch (e) { falha(e); }
+    };
+  };
+  const carregar = async () => {
+    carregando($('#fn-lista'));
+    try {
+      est.dados = await GET('/financeiro?de=' + est.de + '&ate=' + est.ate);
+      $('#fn-per').textContent = est.de === est.ate ? dataBR(est.de) : dataBR(est.de) + ' a ' + dataBR(est.ate);
+      desenharExtrato(); desenharLista(); desenharAjustes();
+    } catch (e) { falha(e); }
+  };
+  window.editarLancamento = id => modalLancamento(null, window.__lanc[id], est.dados.categorias, carregar);
+  el.querySelectorAll('[data-novo]').forEach(b => b.onclick = () => modalLancamento(b.dataset.novo, null, (est.dados && est.dados.categorias) || [], carregar));
+  el.querySelectorAll('#fn-abas button').forEach(b => b.onclick = () => {
+    est.per = b.dataset.p; el.querySelectorAll('#fn-abas button').forEach(x => x.classList.toggle('sel', x === b));
+    $('#fn-pers').hidden = est.per !== 'pers';
+    if (est.per === 'pers') { est.de = $('#fn-de').value; est.ate = $('#fn-ate').value; } else { est.de = periodos[est.per][1]; est.ate = periodos[est.per][2]; }
+    carregar();
+  });
+  ['#fn-de', '#fn-ate'].forEach(s => $(s).addEventListener('change', () => { est.de = $('#fn-de').value; est.ate = $('#fn-ate').value; carregar(); }));
+  el.querySelectorAll('#fn-filtro button').forEach(b => b.onclick = () => { est.filtro = b.dataset.f; el.querySelectorAll('#fn-filtro button').forEach(x => x.classList.toggle('sel', x === b)); desenharLista(); });
+  await carregar();
+};

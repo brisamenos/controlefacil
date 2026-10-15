@@ -11,6 +11,7 @@ const MENU_ADMIN = [
   { h: '#/cobrancas', t: 'Cobranças', i: 'cobrar' },
   { h: '#/clientes', t: 'Clientes', i: 'clientes' },
   { h: '#/calendario', t: 'Calendário', i: 'cal' },
+  { h: '#/financeiro', t: 'Financeiro', i: 'fin', perm: 'financeiro' },
   { h: '#/relatorios', t: 'Relatórios', i: 'rel', perm: 'relatorios' },
   { h: '#/config', t: 'Configurações', i: 'config' },
 ];
@@ -90,7 +91,7 @@ async function rotear() {
   } : {
     'inicio': () => Admin.inicio(el), 'cobrancas': () => Admin.cobrancas(el), 'clientes': () => Admin.clientes(el),
     'cliente': () => Admin.cliente(el, partes[1]), 'novo': () => Admin.novo(el), 'calendario': () => Admin.calendario(el),
-    'relatorios': () => Admin.relatorios(el), 'config': () => Admin.config(el),
+    'relatorios': () => Admin.relatorios(el), 'financeiro': () => Admin.financeiro(el), 'config': () => Admin.config(el),
   };
   const chave = sup ? partes.slice(0, partes[1] === 'admin' ? 2 : 2).join('/').replace(/^super\/?$/, 'super') : partes[0];
   const fn = rotas[chave] || rotas[sup ? 'super' : 'inicio'];

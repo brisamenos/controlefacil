@@ -158,6 +158,21 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_admin ON audit_logs(admin_id, criado_em);
 
+CREATE TABLE IF NOT EXISTS lancamentos (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tipo        TEXT NOT NULL CHECK(tipo IN ('investimento','extra','despesa')),
+  descricao   TEXT NOT NULL,
+  categoria   TEXT,
+  valor       REAL NOT NULL,
+  data        TEXT NOT NULL,
+  forma       TEXT,
+  criado_por  INTEGER,
+  criado_em   TEXT NOT NULL DEFAULT (datetime('now')),
+  atualizado_em TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lanc_admin ON lancamentos(admin_id, data, tipo);
+
 CREATE TABLE IF NOT EXISTS settings (
   admin_id  INTEGER NOT NULL DEFAULT 0,
   chave     TEXT NOT NULL,
