@@ -987,24 +987,37 @@ Admin.financeiro = async el => {
   const antIni = (() => { const [a, m] = h.split('-').map(Number); return new Date(Date.UTC(a, m - 2, 1)).toISOString().slice(0, 10); })();
   const periodos = { hoje: ['Hoje', h, h], d7: ['7 dias', somaDias(h, -6), h], mes: ['Este mês', iniMes, h], ant: ['Mês anterior', antIni, somaDias(iniMes, -1)], ano: ['Este ano', h.slice(0, 4) + '-01-01', h], pers: ['Personalizado'] };
   const est = { per: 'mes', de: iniMes, ate: h, filtro: 'todos', dados: null };
-  el.innerHTML = `<div class="topo"><div><h1>Financeiro</h1><p id="fn-per">&nbsp;</p></div></div>
-    <div class="abas" id="fn-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === est.per ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
-    <div class="linha-campos" id="fn-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="fn-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="fn-ate" value="${h}"></div></div>
+  let secao = 'resumo';
+  try { secao = sessionStorage.getItem('cf_fin_secao') || 'resumo'; } catch (e) {}
+  el.innerHTML = `<div class="topo"><div><h1>Financeiro</h1></div></div>
     <div id="fn-caixa"></div>
-    <div class="painel" id="fn-receber" style="margin-bottom:16px"></div>
     <div class="fin-botoes">
       <button class="btn btn-claro" data-novo="investimento" style="color:var(--tinta)"><b>↑</b>Investimento</button>
       <button class="btn btn-claro" data-novo="extra" style="color:#0E7C77"><b>+</b>Extra</button>
       <button class="btn btn-claro" data-novo="despesa" style="color:var(--margem)"><b>−</b>Despesa</button>
     </div>
-    <div class="grade grade-2" style="align-items:start">
-      <div><div id="fn-extrato"></div><div id="fn-formas"></div></div>
+    <div class="segmentos fin-secoes" id="fn-secoes">
+      <button data-s="resumo">Resumo</button><button data-s="receber">A receber</button><button data-s="livro">Livro-caixa</button>
+    </div>
+    <div id="fn-periodo">
+      <div class="abas" id="fn-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === est.per ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
+      <div class="linha-campos" id="fn-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="fn-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="fn-ate" value="${h}"></div></div>
+      <p class="muted" id="fn-per" style="margin:0 0 12px;font-size:13px">&nbsp;</p>
+    </div>
+    <div data-secao="resumo">
+      <div class="grade grade-2" style="align-items:start">
+        <div id="fn-extrato"></div>
+        <div><div id="fn-formas"></div>
+          <details class="painel" id="fn-ajustes-box"><summary style="cursor:pointer;font-weight:700">Ajustes do financeiro</summary><div id="fn-ajustes" style="margin-top:10px"></div></details></div>
+      </div>
+    </div>
+    <div data-secao="receber" hidden><div class="painel" id="fn-receber"></div></div>
+    <div data-secao="livro" hidden>
       <div class="painel"><div class="painel-topo"><h2>Livro-caixa</h2><small id="fn-qtd"></small></div>
         <div id="fn-conf"></div>
         <div class="abas" id="fn-filtro" style="margin-bottom:4px">${[['todos', 'Todas'], ['entradas', 'Entradas'], ['saidas', 'Saídas'], ['recebido', 'Recebido'], ['investimento', 'Investimento'], ['extra', 'Extra'], ['despesa', 'Despesa']].map(([k, t]) => `<button data-f="${k}" class="${k === 'todos' ? 'sel' : ''}">${t}</button>`).join('')}</div>
         <div class="lista" id="fn-lista"></div></div>
-    </div>
-    <div class="painel mt" id="fn-ajustes" style="max-width:640px"></div>`;
+    </div>`;
   const $ = s => el.querySelector(s);
 
   const linha = (tipo, valor, sub) => `<div class="extrato-linha"><span class="ic t-${tipo}">${TIPO_FIN[tipo].ic}</span>
@@ -1031,15 +1044,19 @@ Admin.financeiro = async el => {
   };
   const desenharReceber = () => {
     const r = est.dados.a_receber;
-    const card = (rot, x, cls) => `<div class="indicador ${cls || ''}"><span>${rot}</span><strong>${moeda(x.total)}</strong><small>${x.qtd} parcela(s)${x.juros ? ' · ' + moeda(x.juros) + ' de lucro' : ''}</small></div>`;
+    const card = (rot, x, cls) => `<div class="indicador ${cls || ''}"><span>${rot}</span><strong>${moeda(x.total)}</strong><small>${x.qtd} parcela(s)${x.juros ? '<br>' + moeda(x.juros) + ' de lucro' : ''}</small></div>`;
+    const MOSTRA = 7;
     const sem = (d) => new Date(d + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
     const amanhaISO = somaDias(hojeISO(), 1);
     $('#fn-receber').innerHTML = `<div class="painel-topo"><h2>A receber</h2><small>Total em aberto: <b>${moeda(r.total.total)}</b></small></div>
       <div class="grade grade-3">${card('Hoje', r.hoje)}${card('Amanhã', r.amanha)}${card('Próximos 7 dias', r.dias7)}${card('Próximos 30 dias', r.dias30)}${card('Em atraso', r.atrasado, 'alerta')}${card('Lucro ainda a receber', { total: r.total.juros, qtd: r.total.qtd }, 'bom')}</div>
-      ${r.agenda.length ? `<h3 class="mt" style="margin-bottom:6px">Agenda de recebimentos</h3><div class="lista">${r.agenda.map(a => `<div class="item clicavel" data-dia="${a.dia}">
+      ${r.agenda.length ? `<h3 class="mt" style="margin-bottom:6px">Agenda de recebimentos</h3><div class="lista" id="fn-agenda">${r.agenda.map((a, i) => `<div class="item clicavel" data-dia="${a.dia}" ${i >= MOSTRA ? 'data-extra hidden' : ''}>
         <div><div class="item-titulo">${a.dia === hojeISO() ? 'Hoje' : a.dia === amanhaISO ? 'Amanhã' : dataBR(a.dia)} <span class="muted" style="font-weight:500;font-size:13px">${sem(a.dia)}</span></div>
-        <div class="item-sub"><span>${a.qtd} parcela(s)</span></div></div><div class="item-valor">${moeda(a.total)}</div></div>`).join('')}</div>` : '<div class="vazio">Nenhuma parcela para os próximos 30 dias.</div>'}`;
+        <div class="item-sub"><span>${a.qtd} parcela(s)</span></div></div><div class="item-valor">${moeda(a.total)}</div></div>`).join('')}</div>
+        ${r.agenda.length > MOSTRA ? `<button class="btn btn-claro btn-grande mt" id="fn-agenda-mais">Ver mais ${r.agenda.length - MOSTRA} dia(s)</button>` : ''}` : '<div class="vazio">Nenhuma parcela para os próximos 30 dias.</div>'}`;
     el.querySelectorAll('[data-dia]').forEach(d => d.onclick = () => verDiaReceber(d.dataset.dia));
+    const mais = $('#fn-agenda-mais');
+    if (mais) mais.onclick = () => { el.querySelectorAll('#fn-agenda [data-extra]').forEach(x => { x.hidden = false; }); mais.remove(); };
   };
   const verDiaReceber = async dia => {
     try {
@@ -1052,7 +1069,7 @@ Admin.financeiro = async el => {
   };
   const desenharFormas = () => {
     const f = est.dados.recebido_por_forma;
-    $('#fn-formas').innerHTML = f.length ? `<div class="painel mt"><h3 style="margin-bottom:8px">Recebido por tipo</h3><div class="lista">${f.map(x => `<div class="item"><div><div class="item-titulo">${esc(x.forma)}</div><div class="item-sub"><span>${x.qtd} pagamento(s)</span></div></div><div class="item-valor v-recebido">${moeda(x.total)}</div></div>`).join('')}</div></div>` : '';
+    $('#fn-formas').innerHTML = f.length ? `<div class="painel" style="margin-bottom:16px"><h3 style="margin-bottom:8px">Recebido por tipo</h3><div class="lista">${f.map(x => `<div class="item"><div><div class="item-titulo">${esc(x.forma)}</div><div class="item-sub"><span>${x.qtd} pagamento(s)</span></div></div><div class="item-valor v-recebido">${moeda(x.total)}</div></div>`).join('')}</div></div>` : '';
   };
   const desenharLista = () => {
     const d = est.dados;
@@ -1075,8 +1092,7 @@ Admin.financeiro = async el => {
   };
   const desenharAjustes = () => {
     const inv = est.dados.totais.investimento;
-    $('#fn-ajustes').innerHTML = `<h3 style="margin-bottom:6px">Ajustes do financeiro</h3>
-      <label class="check"><input type="checkbox" id="fn-auto" ${inv.automatico ? 'checked' : ''} ${pode('configuracoes') ? '' : 'disabled'}> Somar o valor principal de cada novo registro no Investimento</label>
+    $('#fn-ajustes').innerHTML = `<label class="check"><input type="checkbox" id="fn-auto" ${inv.automatico ? 'checked' : ''} ${pode('configuracoes') ? '' : 'disabled'}> Somar o valor principal de cada novo registro no Investimento</label>
       <small class="muted">Ligado: cada venda ou empréstimo registrado entra como dinheiro investido. Desligue se você prefere lançar o investimento à mão.</small>
       <div class="campo mt"><label>Categorias de despesa</label><input class="entrada" id="fn-cats" value="${esc(est.dados.categorias.join('; '))}" ${pode('configuracoes') ? '' : 'disabled'}><small>Separe com ponto e vírgula.</small></div>
       ${pode('configuracoes') ? '<button class="btn btn-p btn-claro" id="fn-salvar-aj">Salvar ajustes</button>' : ''}`;
@@ -1096,6 +1112,14 @@ Admin.financeiro = async el => {
       desenharExtrato(); desenharReceber(); desenharFormas(); desenharLista(); desenharAjustes();
     } catch (e) { falha(e); }
   };
+  const mostrarSecao = sx => {
+    secao = sx; try { sessionStorage.setItem('cf_fin_secao', sx); } catch (e) {}
+    el.querySelectorAll('#fn-secoes button').forEach(b => b.classList.toggle('sel', b.dataset.s === sx));
+    el.querySelectorAll('[data-secao]').forEach(d => { d.hidden = d.dataset.secao !== sx; });
+    $('#fn-periodo').hidden = sx === 'receber';
+  };
+  el.querySelectorAll('#fn-secoes button').forEach(b => b.onclick = () => mostrarSecao(b.dataset.s));
+  mostrarSecao(secao);
   window.editarLancamento = id => modalLancamento(null, window.__lanc[id], est.dados.categorias, carregar);
   el.querySelectorAll('[data-novo]').forEach(b => b.onclick = () => modalLancamento(b.dataset.novo, null, (est.dados && est.dados.categorias) || [], carregar));
   el.querySelectorAll('#fn-abas button').forEach(b => b.onclick = () => {

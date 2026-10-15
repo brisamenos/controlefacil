@@ -427,3 +427,7 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 .faixa-caixa { grid-template-columns: 1.4fr 1fr 1fr; margin-bottom: 16px; }
 .faixa-caixa .secundario strong { white-space: nowrap; }
 @media (max-width: 640px) { .faixa-caixa { grid-template-columns: 1fr 1fr; } }
+.fin-secoes { margin-bottom: 14px; }
+.fin-secoes button { min-height: 44px; font-size: 15px; }
+#fn-receber .grade-3 .indicador strong { font-size: 19px; }
+@media (max-width: 640px) { #fn-receber .indicador small { font-size: 11.5px; line-height: 1.35; } }
