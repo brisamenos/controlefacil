@@ -39,10 +39,20 @@ const PUBLICOS = { '/estilo.css': 'text/css', '/tela-base.js': 'application/java
                    '/icone-192.png': 'image/png', '/icone-512.png': 'image/png', '/icone-mascara.png': 'image/png', '/icone-apple.png': 'image/png' };
 app.get(Object.keys(PUBLICOS), (req, res) => {
   res.type(PUBLICOS[req.path]);
-  res.setHeader('Cache-Control', 'no-cache'); // sempre confere se há versão nova
+  // arquivos com ?v= mudam de endereço a cada versão; sem ?v= (ex.: sw.js) sempre conferem
+  res.setHeader('Cache-Control', req.query.v ? 'public, max-age=31536000, immutable' : 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, req.path.slice(1)));
 });
-app.get('*', (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'index.html')); });
+// index.html com número de versão em cada arquivo: a cada implantação o endereço muda,
+// então nenhum cache (navegador, Cloudflare...) consegue entregar arquivo antigo.
+const fs = require('fs');
+const INDEX = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
+  .replace(/(src|href)="\/(tela-[a-z]+\.js|estilo\.css)"/g, (m, attr, arq) => `${attr}="/${arq}?v=${VERSAO_APP}"`);
+app.get('*', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, must-revalidate');
+  res.setHeader('CDN-Cache-Control', 'no-store');
+  res.type('html').send(INDEX);
+});
 
 app.use((err, req, res, next) => {
   console.error(err);

@@ -295,7 +295,6 @@ Admin.cobrancas = async el => {
   el.querySelectorAll('#cb-abas button').forEach(b => b.onclick = () => {
     estado.aba = b.dataset.a;
     el.querySelectorAll('#cb-abas button').forEach(x => x.classList.toggle('sel', x === b));
-    history.replaceState(null, '', '#/cobrancas?aba=' + estado.aba);
     buscar();
   });
   const abaSel = el.querySelector('#cb-abas .sel');
@@ -773,7 +772,7 @@ Admin.relatorios = async el => {
   const antIni = (() => { const [a, m] = h.split('-').map(Number); return new Date(Date.UTC(a, m - 2, 1)).toISOString().slice(0, 10); })();
   const antFim = somaDias(iniMes, -1);
   const periodos = { hoje: ['Hoje', h, h], d7: ['7 dias', somaDias(h, -6), h], d30: ['30 dias', somaDias(h, -29), h], mes: ['Este mês', iniMes, h], ant: ['Mês anterior', antIni, antFim], pers: ['Personalizado'] };
-  let atual = 'mes';
+  let atual = 'hoje';
   el.innerHTML = `<div class="topo"><div><h1>Relatórios</h1><p id="rl-per"></p></div><button class="btn btn-claro" onclick="window.print()">Imprimir</button></div>
     <div class="abas" id="rl-abas">${Object.entries(periodos).map(([k, v]) => `<button data-p="${k}" class="${k === atual ? 'sel' : ''}">${v[0]}</button>`).join('')}</div>
     <div class="linha-campos" id="rl-pers" hidden style="max-width:420px"><div class="campo"><label>De</label><input class="entrada" type="date" id="rl-de" value="${iniMes}"></div><div class="campo"><label>Até</label><input class="entrada" type="date" id="rl-ate" value="${h}"></div></div>
@@ -818,7 +817,7 @@ Admin.relatorios = async el => {
     else carregar(periodos[atual][1], periodos[atual][2]);
   });
   ['#rl-de', '#rl-ate'].forEach(s => $(s).addEventListener('change', () => carregar($('#rl-de').value, $('#rl-ate').value)));
-  carregar(iniMes, h);
+  carregar(h, h);
 };
 
 /* ═══════════════════ CONFIGURAÇÕES ═══════════════════ */
@@ -986,7 +985,7 @@ Admin.financeiro = async el => {
   const h = hojeISO(), iniMes = h.slice(0, 7) + '-01';
   const antIni = (() => { const [a, m] = h.split('-').map(Number); return new Date(Date.UTC(a, m - 2, 1)).toISOString().slice(0, 10); })();
   const periodos = { hoje: ['Hoje', h, h], d7: ['7 dias', somaDias(h, -6), h], mes: ['Este mês', iniMes, h], ant: ['Mês anterior', antIni, somaDias(iniMes, -1)], ano: ['Este ano', h.slice(0, 4) + '-01-01', h], pers: ['Personalizado'] };
-  const est = { per: 'mes', de: iniMes, ate: h, filtro: 'todos', dados: null };
+  const est = { per: 'hoje', de: h, ate: h, filtro: 'todos', dados: null };
   let secao = 'resumo';
   try { secao = sessionStorage.getItem('cf_fin_secao') || 'resumo'; } catch (e) {}
   el.innerHTML = `<div class="topo"><div><h1>Financeiro</h1></div></div>

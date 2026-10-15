@@ -1,27 +1,38 @@
-// sw.js — permite instalar o app e abrir rápido.
-// Os dados (API) vêm sempre do servidor, nunca do cache, para não mostrar valores velhos.
-const VERSAO = 'cf-v2';
-const ARQUIVOS = ['/', '/estilo.css', '/tela-base.js', '/tela-admin.js', '/tela-super.js', '/tela-app.js',
-                  '/manifest.json', '/icone-192.png', '/icone-512.png'];
+// sw.js — permite instalar o app e abrir rápido, SEM nunca prender versão antiga.
+// Regra: tudo vem do servidor (conferindo se mudou); a cópia salva só é usada sem internet.
+const VERSAO = 'cf-v3';
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(
+    ['/manifest.json', '/icone-192.png', '/icone-512.png'].map(u => new Request(u, { cache: 'reload' }))
+  )).catch(() => {}).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSAO).map(k => caches.delete(k))))
-    .then(() => self.clients.claim()));
+  e.waitUntil((async () => {
+    const chaves = await caches.keys();
+    const eraAtualizacao = chaves.some(k => k.startsWith('cf-') && k !== VERSAO);
+    await Promise.all(chaves.filter(k => k !== VERSAO).map(k => caches.delete(k)));
+    await self.clients.claim();
+    // Se havia uma versão antiga, recarrega as telas abertas para entrar a nova na hora
+    if (eraAtualizacao) {
+      const janelas = await self.clients.matchAll({ type: 'window' });
+      janelas.forEach(j => { try { j.navigate(j.url); } catch (err) {} });
+    }
+  })());
 });
 
 self.addEventListener('fetch', e => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
-  // Rede primeiro (sempre a versão mais nova); sem internet, usa a cópia salva
+  const navegacao = req.mode === 'navigate';
+  // 'no-cache' = sempre pergunta ao servidor se mudou (ignora o que o navegador guardou)
+  const busca = navegacao ? fetch(url.href, { cache: 'no-cache', credentials: 'same-origin' }) : fetch(req, { cache: 'no-cache' });
   e.respondWith(
-    fetch(req).then(res => {
-      if (res.ok) { const copia = res.clone(); caches.open(VERSAO).then(c => c.put(req.mode === 'navigate' ? '/' : req, copia)); }
+    busca.then(res => {
+      if (res.ok) { const copia = res.clone(); caches.open(VERSAO).then(c => c.put(navegacao ? '/' : req, copia)); }
       return res;
-    }).catch(() => caches.match(req.mode === 'navigate' ? '/' : req))
+    }).catch(() => caches.match(navegacao ? '/' : req, { ignoreSearch: !navegacao }))
   );
 });
