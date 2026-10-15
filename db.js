@@ -11,7 +11,7 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-db.exec(`
+const ESQUEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   role             TEXT NOT NULL DEFAULT 'admin' CHECK(role IN ('superadmin','admin')),
@@ -164,7 +164,9 @@ CREATE TABLE IF NOT EXISTS settings (
   valor     TEXT,
   PRIMARY KEY (admin_id, chave)
 );
-`);
+`;
+db.exec(ESQUEMA);
+
 
 // ── Super Admin inicial ─────────────────────────────────────────────────────
 if (!db.prepare(`SELECT 1 FROM users WHERE role='superadmin' LIMIT 1`).get()) {
@@ -174,4 +176,7 @@ if (!db.prepare(`SELECT 1 FROM users WHERE role='superadmin' LIMIT 1`).get()) {
   console.log('Super Admin criado — usuário: admin  senha: ' + senha);
 }
 
-module.exports = { db, DB_PATH };
+// Recria tabelas que faltarem (usado depois de importar um backup)
+function garantirEsquema() { db.exec(ESQUEMA); }
+
+module.exports = { db, DB_PATH, garantirEsquema };

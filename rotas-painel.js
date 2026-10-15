@@ -155,6 +155,13 @@ router.put('/config', A.exigir('configuracoes'), (req, res) => {
   const b = { ...(req.body || {}) };
   delete b.sistema_nome; delete b.suporte_contato;
   if (b.whatsapp_webhook_token === '••••••') delete b.whatsapp_webhook_token;
+  if ('dias_cobranca_padrao' in b) {
+    let d = [];
+    try { d = typeof b.dias_cobranca_padrao === 'string' ? JSON.parse(b.dias_cobranca_padrao) : b.dias_cobranca_padrao; } catch (e) {}
+    d = [...new Set((Array.isArray(d) ? d : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))].sort();
+    if (!d.length) return res.status(400).json({ erro: 'Marque pelo menos um dia da semana para cobrar.' });
+    b.dias_cobranca_padrao = JSON.stringify(d);
+  }
   for (const k of ['percentuais_padrao', 'formas_pagamento', 'descricoes_padrao']) {
     if (k in b) {
       try { const arr = typeof b[k] === 'string' ? JSON.parse(b[k]) : b[k]; if (!Array.isArray(arr)) throw 0; b[k] = JSON.stringify(arr.slice(0, 30)); }

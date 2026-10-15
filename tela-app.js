@@ -56,10 +56,12 @@ function desenharEstrutura() {
     const m = abrirModal({
       titulo: 'Menu', subtitulo: esc(u.nome),
       corpo: `<div class="grade" style="gap:8px">${extras.map(x => `<a class="btn btn-claro btn-grande" style="justify-content:flex-start" href="${x.h}">${I[x.i]} ${x.t}</a>`).join('')}
+        ${jaInstalado() ? '' : '<button class="btn btn-claro btn-grande" style="justify-content:flex-start" id="m-inst">📲 Instalar aplicativo</button>'}
         <button class="btn btn-perigo btn-grande" style="justify-content:flex-start" id="m-sair">${I.sair} Sair</button></div>`,
     });
     m.querySelectorAll('a').forEach(a => a.addEventListener('click', fecharModal));
     m.querySelector('#m-sair').onclick = sair;
+    const mi = m.querySelector('#m-inst'); if (mi) mi.onclick = () => { fecharModal(); instalarApp(); };
   };
 }
 
@@ -169,4 +171,46 @@ async function iniciar() {
   window.addEventListener('hashchange', () => { fecharModal(); rotear(); });
   rotear();
 }
+/* ── Instalar como aplicativo (Android/Chrome) ─────────── */
+let pedidoInstalar = null;
+const jaInstalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); pedidoInstalar = e; mostrarInstalar(); });
+window.addEventListener('appinstalled', () => { pedidoInstalar = null; document.querySelectorAll('.instalar-app').forEach(b => b.remove()); toast('Aplicativo instalado!', 'ok'); });
+
+async function instalarApp() {
+  if (pedidoInstalar) {
+    pedidoInstalar.prompt();
+    await pedidoInstalar.userChoice;
+    pedidoInstalar = null;
+    return;
+  }
+  abrirModal({
+    titulo: 'Instalar o aplicativo',
+    corpo: /iphone|ipad/i.test(navigator.userAgent)
+      ? '<p style="margin-top:0">No Safari, toque em <b>Compartilhar</b> (o quadrado com a seta) e depois em <b>Adicionar à Tela de Início</b>.</p>'
+      : '<p style="margin-top:0">No Chrome, toque nos <b>três pontinhos</b> no canto de cima e depois em <b>Instalar aplicativo</b> ou <b>Adicionar à tela inicial</b>.</p>',
+    rodape: '<button class="btn" data-fechar>Entendi</button>',
+  });
+}
+
+function mostrarInstalar() {
+  if (jaInstalado()) return;
+  const lugares = [document.querySelector('.login-form form'), document.querySelector('.lateral-rodape')];
+  lugares.forEach(l => {
+    if (!l || l.querySelector('.instalar-app')) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn btn-claro instalar-app';
+    b.style.cssText = 'width:100%;margin-top:12px';
+    b.innerHTML = '📲 Instalar aplicativo';
+    b.onclick = instalarApp;
+    l.appendChild(b);
+  });
+}
+new MutationObserver(() => { if (pedidoInstalar || /iphone|ipad/i.test(navigator.userAgent)) mostrarInstalar(); })
+  .observe(document.getElementById('raiz'), { childList: true });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+
 iniciar();

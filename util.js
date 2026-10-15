@@ -55,6 +55,7 @@ const PADRAO = {
   percentuais_padrao: '[10,12,15,20]',
   formas_pagamento: '["Dinheiro","Pix","Transferência","Cartão","Outro"]',
   descricoes_padrao: '["Compra","Dívida","Produto","Eletrodoméstico","Serviço","Acordo","Outro"]',
+  dias_cobranca_padrao: '[0,1,2,3,4,5,6]',
   lembrete_7d: '0', lembrete_3d: '1', lembrete_1d: '1', lembrete_hoje: '1',
   lembrete_atraso: '1', lembrete_atraso_intervalo: '3', lembrete_atraso_max: '30',
   lembrete_diario: '1',
@@ -62,6 +63,8 @@ const PADRAO = {
   empresa_nome: '', empresa_documento: '', empresa_telefone: '', empresa_endereco: '',
   pix_chave: '',
   sistema_nome: 'Controle Fácil', suporte_contato: '',
+  telegram_token: '', telegram_chat_id: '', telegram_ativo: '0', telegram_frequencia: 'diario', telegram_hora: '3',
+  telegram_ultimo_envio: '', telegram_ultimo_status: '',
 };
 function getConfig(adminId) {
   const out = { ...PADRAO };

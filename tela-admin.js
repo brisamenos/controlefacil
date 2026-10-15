@@ -11,11 +11,48 @@ async function carregarConfig(forcar) {
     c.percentuais = lista(c.percentuais_padrao, [10, 12, 15, 20]);
     c.formas = lista(c.formas_pagamento, ['Dinheiro', 'Pix', 'Transferência', 'Cartão', 'Outro']);
     c.descricoes = lista(c.descricoes_padrao, ['Compra', 'Dívida', 'Produto', 'Serviço', 'Acordo', 'Outro']);
+    c.dias_cobranca = lista(c.dias_cobranca_padrao, [0, 1, 2, 3, 4, 5, 6]).map(Number).filter(n => n >= 0 && n <= 6);
+    if (!c.dias_cobranca.length) c.dias_cobranca = [0, 1, 2, 3, 4, 5, 6];
     CFG = c;
   }
   return CFG;
 }
 const pode = p => { const u = Sessao.usuario; return !!(u && u.permissoes && u.permissoes[p]); };
+
+/* ── Seletor de dias de cobrança (caixinhas) ────────────── */
+const DIAS_CURTOS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const ATALHOS_DIAS = [
+  { t: 'Todos os dias', d: [0, 1, 2, 3, 4, 5, 6] },
+  { t: 'Sem domingo', d: [1, 2, 3, 4, 5, 6] },
+  { t: 'Sem fim de semana', d: [1, 2, 3, 4, 5] },
+];
+function textoDias(dias, curto) {
+  const k = [...dias].sort().join(',');
+  const nomes = curto ? { '0,1,2,3,4,5,6': 'todos os dias', '1,2,3,4,5,6': 'segunda a sábado', '1,2,3,4,5': 'segunda a sexta' }
+    : { '0,1,2,3,4,5,6': 'todos os dias', '1,2,3,4,5,6': 'de segunda a sábado (sem domingo)', '1,2,3,4,5': 'de segunda a sexta (sem fim de semana)' };
+  if (nomes[k]) return nomes[k];
+  if (!dias.length) return '';
+  const lista = [...dias].sort().map(d => DIAS_CURTOS[d].toLowerCase());
+  return lista.length === 1 ? 'só às ' + lista[0] : lista.slice(0, -1).join(', ') + ' e ' + lista.at(-1);
+}
+function seletorDias(box, diasIniciais, aoMudar) {
+  let dias = [...new Set(diasIniciais)].sort();
+  const desenhar = () => {
+    const k = dias.join(',');
+    box.innerHTML = `<div class="dias-atalhos">${ATALHOS_DIAS.map((a, i) => `<button type="button" data-at="${i}" class="${a.d.join(',') === k ? 'sel' : ''}">${a.t}</button>`).join('')}</div>
+      <div class="dias-semana" role="group" aria-label="Dias de cobrança">${DIAS_CURTOS.map((n, i) => `<label class="dia-sem ${dias.includes(i) ? 'on' : ''} ${i === 0 || i === 6 ? 'fds' : ''}">
+        <input type="checkbox" data-dia="${i}" ${dias.includes(i) ? 'checked' : ''}><span class="marca-dia">${I.ok}</span>${n}</label>`).join('')}</div>
+      <div class="dias-resumo">${dias.length ? 'Cobra <b>' + textoDias(dias) + '</b>.' : '<span style="color:var(--margem)">Marque pelo menos um dia.</span>'}</div>`;
+    box.querySelectorAll('[data-at]').forEach(b => b.onclick = () => { dias = [...ATALHOS_DIAS[b.dataset.at].d]; desenhar(); aoMudar && aoMudar(dias); });
+    box.querySelectorAll('[data-dia]').forEach(c => c.onchange = () => {
+      const d = Number(c.dataset.dia);
+      dias = c.checked ? [...dias, d].sort() : dias.filter(x => x !== d);
+      desenhar(); aoMudar && aoMudar(dias);
+    });
+  };
+  desenhar();
+  return { valor: () => [...dias] };
+}
 
 /* ── Linha de cobrança reutilizável ─────────────────────── */
 function linhaCobranca(p, opc = {}) {
@@ -425,7 +462,7 @@ Admin.novo = async el => {
     cliente: null, descricao: '', valor: 0, percentual: CFG.percentuais[1] ?? CFG.percentuais[0] ?? 0,
     frequencia: 'mensal', modo: 'qtd', qtd: 4, valor_parcela: 0,
     data_inicial: '', dia_semana: new Date(amanha + 'T12:00:00').getDay(), dia_mes: Number(hojeISO().slice(8, 10)),
-    intervalo_dias: 10, pular_domingos: false, sim: null, parcelas: null, editado: false,
+    intervalo_dias: 10, dias_cobranca: [...CFG.dias_cobranca], sim: null, parcelas: null, editado: false,
   };
   if (q.cliente) { try { const d = await GET('/clientes/' + q.cliente); st.cliente = { id: d.cliente.id, nome: d.cliente.nome }; } catch (e) {} }
 
@@ -520,14 +557,16 @@ Admin.novo = async el => {
   const camposFreq = () => {
     const f = st.frequencia, box = $('#nr-freq-campos');
     const dataIni = (rot, pad) => `<div class="campo"><label>${rot}</label><input class="entrada" type="date" id="nr-dini" value="${st.data_inicial || pad}"></div>`;
-    if (f === 'diario') box.innerHTML = dataIni('Primeiro pagamento', amanha) + `<label class="check"><input type="checkbox" id="nr-dom" ${st.pular_domingos ? 'checked' : ''}> Não cobrar aos domingos</label>`;
+    if (f === 'diario') {
+      box.innerHTML = dataIni('Primeiro pagamento', amanha) + '<span class="rotulo">Dias de cobrança</span><div id="nr-dias" style="margin-top:8px"></div>';
+      seletorDias(box.querySelector('#nr-dias'), st.dias_cobranca, d => { st.dias_cobranca = d; simular(); });
+    }
     if (f === 'semanal') box.innerHTML = `<div class="campo"><label>Dia da semana</label><select class="entrada" id="nr-dsem">${SEMANA.map((d, i) => `<option value="${i}" ${i === Number(st.dia_semana) ? 'selected' : ''}>${d}</option>`).join('')}</select></div>`;
     if (f === 'quinzenal') box.innerHTML = dataIni('Primeiro vencimento', somaDias(hojeISO(), 15));
     if (f === 'mensal') box.innerHTML = `<div class="campo"><label>Dia do vencimento</label><input class="entrada num" id="nr-dmes" type="number" min="1" max="31" inputmode="numeric" value="${st.dia_mes}"><small>Todo dia ${st.dia_mes} de cada mês. Em meses mais curtos, vence no último dia.</small></div>`;
     if (f === 'personalizado') box.innerHTML = `<div class="linha-campos"><div class="campo"><label>A cada quantos dias</label><input class="entrada num" id="nr-int" type="number" min="1" max="365" value="${st.intervalo_dias}"></div>` + dataIni('Primeiro vencimento', somaDias(hojeISO(), Number(st.intervalo_dias) || 1)) + '</div>';
     const on = (s, ev, fn) => { const x = $(s); if (x) x.addEventListener(ev, fn); };
     on('#nr-dini', 'change', e => { st.data_inicial = e.target.value; simular(); });
-    on('#nr-dom', 'change', e => { st.pular_domingos = e.target.checked; simular(); });
     on('#nr-dsem', 'change', e => { st.dia_semana = Number(e.target.value); simular(); });
     on('#nr-dmes', 'input', e => { st.dia_mes = Number(e.target.value); const s = e.target.parentElement.querySelector('small'); if (s) s.textContent = 'Todo dia ' + (st.dia_mes || '?') + ' de cada mês. Em meses mais curtos, vence no último dia.'; simular(); });
     on('#nr-int', 'input', e => { st.intervalo_dias = Number(e.target.value); simular(); });
@@ -556,7 +595,7 @@ Admin.novo = async el => {
     valor_principal: st.valor, percentual: st.percentual, frequencia: st.frequencia,
     qtd_parcelas: st.modo === 'qtd' ? st.qtd : 0, valor_parcela: st.modo === 'valor' ? st.valor_parcela : 0,
     data_inicial: ['diario', 'quinzenal', 'personalizado'].includes(st.frequencia) ? (st.data_inicial || ($('#nr-dini') || {}).value || '') : '',
-    dia_semana: st.dia_semana, dia_mes: st.dia_mes, intervalo_dias: st.intervalo_dias, pular_domingos: st.pular_domingos,
+    dia_semana: st.dia_semana, dia_mes: st.dia_mes, intervalo_dias: st.intervalo_dias, dias_cobranca: st.frequencia === 'diario' ? st.dias_cobranca : undefined,
   });
   let seq = 0;
   const simular = debounce(async () => {
@@ -585,7 +624,7 @@ Admin.novo = async el => {
       <div><span>Valor adicional</span><b>${moeda(s.acrescimo)}</b></div>
       <div class="total"><span style="color:inherit">Total</span><span>${moeda(soma)}</span></div></div>
       <p style="margin:10px 0 0" class="forte">${st.parcelas.length}x de ${moeda(st.parcelas[0].valor)}${ultimoDif ? ' <span class="muted" style="font-weight:500">(última de ' + moeda(st.parcelas.at(-1).valor) + ')</span>' : iguais ? '' : ' <span class="muted" style="font-weight:500">(valores ajustados)</span>'}</p>
-      <p class="muted" style="margin:2px 0 0">${FREQ[s.frequencia]} · de ${dataBR(st.parcelas[0].vencimento)} a ${dataBR(st.parcelas.at(-1).vencimento)}</p>
+      <p class="muted" style="margin:2px 0 0">${FREQ[s.frequencia]}${s.frequencia === 'diario' && s.config.dias_cobranca && s.config.dias_cobranca.length < 7 ? ', ' + textoDias(s.config.dias_cobranca, true) : ''} · de ${dataBR(st.parcelas[0].vencimento)} a ${dataBR(st.parcelas.at(-1).vencimento)}</p>
       ${st.editado && Math.abs(soma - s.total) > 0.004 ? '<div class="aviso">A soma das parcelas (' + moeda(soma) + ') é diferente do total calculado (' + moeda(s.total) + '). Será salvo o valor das parcelas.</div>' : ''}`;
   };
   const desenharParcelas = () => {
@@ -737,6 +776,7 @@ Admin.config = async el => {
           <div class="campo"><label>Percentuais rápidos</label><input class="entrada" name="percentuais_padrao" data-lista="num" value="${esc(c.percentuais.join('; '))}"><small>Separe com ponto e vírgula. Ex.: 10; 12; 12,5; 20</small></div>
           <div class="campo"><label>Descrições rápidas</label><input class="entrada" name="descricoes_padrao" data-lista="txt" value="${esc(c.descricoes.join('; '))}"><small>Aparecem como atalhos no novo registro.</small></div>
           <div class="campo"><label>Formas de pagamento</label><input class="entrada" name="formas_pagamento" data-lista="txt" value="${esc(c.formas.join('; '))}"></div>
+          <div class="campo"><label>Dias de cobrança (pagamentos diários)</label><div id="cf-dias"></div><small>Já vem marcado assim em todo novo registro diário. Dá para mudar em cada registro.</small></div>
           ${editar ? '<button class="btn" data-salvar="cf-cobranca">Salvar cobrança</button>' : ''}</div>
         <div class="painel" id="cf-lemb"><h2 style="margin-bottom:6px">Lembretes</h2><p class="muted" style="margin-top:0">O sistema prepara os lembretes todos os dias. No modo manual, eles aparecem no Início para você enviar com um toque.</p>
           ${tg('lembrete_7d', '7 dias antes')}${tg('lembrete_3d', '3 dias antes')}${tg('lembrete_1d', '1 dia antes')}${tg('lembrete_hoje', 'No dia do vencimento')}
@@ -770,8 +810,14 @@ Admin.config = async el => {
       </div>
     </div>`;
   const $ = s => el.querySelector(s);
+  const selDias = seletorDias($('#cf-dias'), c.dias_cobranca);
+  if (!editar) $('#cf-dias').querySelectorAll('input,button').forEach(x => { x.disabled = true; });
   el.querySelectorAll('[data-salvar]').forEach(b => b.onclick = async () => {
     const box = $('#' + b.dataset.salvar), dados = {};
+    if (b.dataset.salvar === 'cf-cobranca') {
+      dados.dias_cobranca_padrao = JSON.stringify(selDias.valor());
+      if (!selDias.valor().length) return toast('Marque pelo menos um dia de cobrança.', 'erro');
+    }
     box.querySelectorAll('[name]').forEach(i => {
       if (i.type === 'checkbox') dados[i.name] = i.checked ? '1' : '0';
       else if (i.dataset.lista) dados[i.name] = JSON.stringify(i.value.split(';').map(x => x.trim()).filter(Boolean).map(x => i.dataset.lista === 'num' ? lerNumero(x) : x));

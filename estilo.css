@@ -368,3 +368,25 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 .direita { text-align: right; }
 .forte { font-weight: 700; }
 @media print { .lateral, .barra-inferior, .acoes, .btn { display: none !important; } .principal { padding: 0; } }
+
+/* Seletor de dias da semana */
+.dias-atalhos { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.dias-atalhos button { min-height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--linha); background: var(--papel); font-weight: 600; font-size: 13px; color: var(--lapis); cursor: pointer; }
+.dias-atalhos button.sel { border-color: var(--tinta); color: var(--tinta); background: var(--tinta-suave); }
+.dias-semana { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.dia-sem {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 2px 8px;
+  border: 1.5px solid var(--linha); border-radius: var(--r-sm); background: var(--papel); cursor: pointer; user-select: none;
+  font-weight: 700; font-size: 13px; color: var(--lapis); transition: background .12s, border-color .12s, color .12s;
+}
+.dia-sem input { position: absolute; opacity: 0; pointer-events: none; }
+.dia-sem .marca-dia { width: 20px; height: 20px; border-radius: 6px; border: 2px solid #B8C2D6; display: grid; place-items: center; }
+.dia-sem .marca-dia svg { width: 14px; height: 14px; opacity: 0; }
+.dia-sem.on { border-color: var(--tinta); background: var(--tinta-suave); color: var(--tinta); }
+.dia-sem.on .marca-dia { background: var(--tinta); border-color: var(--tinta); color: #fff; }
+.dia-sem.on .marca-dia svg { opacity: 1; }
+.dia-sem.fds:not(.on) { background: #F7F8FA; }
+.dia-sem:has(input:focus-visible) { outline: 3px solid rgba(43,85,184,.45); outline-offset: 2px; }
+.dias-resumo { font-size: 13px; color: var(--lapis); margin-top: 8px; }
+.dias-resumo b { color: var(--grafite); }
+@media (max-width: 380px) { .dia-sem { font-size: 12px; padding: 8px 0 6px; } }

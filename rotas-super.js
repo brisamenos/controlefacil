@@ -9,6 +9,7 @@ const A = require('./auth');
 const { auditar, hoje, getConfig, setConfig } = require('./util');
 const { garantirModelos } = require('./mensagens');
 const backup = require('./backup');
+const telegram = require('./telegram');
 
 router.use(A.autenticar, A.somenteSuper);
 
@@ -165,7 +166,15 @@ router.post('/notificacoes/lidas', (req, res) => {
 
 router.get('/config', (req, res) => {
   const c = getConfig(0);
-  res.json({ sistema_nome: c.sistema_nome, suporte_contato: c.suporte_contato, backups: backup.listar() });
+  const t = telegram.cfg();
+  res.json({
+    sistema_nome: c.sistema_nome, suporte_contato: c.suporte_contato, backups: backup.listar(), resumo: backup.resumoAtual(),
+    telegram: {
+      token_salvo: !!t.token, token_mascara: t.token ? t.token.split(':')[0] + ':••••••' + t.token.slice(-4) : '',
+      chat_id: t.chat, ativo: t.ativo, frequencia: t.frequencia, hora: t.hora,
+      ultimo_envio: t.ultimo || null, ultimo_status: t.status || '',
+    },
+  });
 });
 router.put('/config', (req, res) => {
   setConfig(0, { sistema_nome: req.body.sistema_nome || 'Controle Fácil', suporte_contato: req.body.suporte_contato || '' });
@@ -185,6 +194,97 @@ router.get('/backup/:arquivo', (req, res) => {
   if (!f || !fs.existsSync(f)) return res.status(404).json({ erro: 'Backup não encontrado.' });
   auditar(req, 'backup_baixado', 'sistema', null, { arquivo: req.params.arquivo }, null);
   res.download(f);
+});
+
+// ── Backup pelo Telegram ────────────────────────────────────────────────────
+const FREQS = ['diario', '12h', '6h', 'semanal'];
+function tokenDe(b) { const t = String((b || {}).token || '').trim(); return t || telegram.cfg().token; }
+
+router.put('/telegram', (req, res) => {
+  const b = req.body || {};
+  const novo = {};
+  if (b.token !== undefined && String(b.token).trim()) {
+    if (!/^\d+:[\w-]{20,}$/.test(String(b.token).trim())) return res.status(400).json({ erro: 'Token inválido. Copie exatamente o que o @BotFather enviou (ex.: 123456789:ABC...).' });
+    novo.telegram_token = String(b.token).trim();
+  }
+  if (b.chat_id !== undefined) {
+    const c = String(b.chat_id).trim();
+    if (c && !/^-?\d{3,20}$/.test(c) && !/^@[\w]{4,}$/.test(c)) return res.status(400).json({ erro: 'ID do chat inválido. É um número, ex.: 123456789 ou -100123456789.' });
+    novo.telegram_chat_id = c;
+  }
+  if (b.frequencia !== undefined) novo.telegram_frequencia = FREQS.includes(b.frequencia) ? b.frequencia : 'diario';
+  if (b.hora !== undefined) novo.telegram_hora = String(Math.min(23, Math.max(0, Math.floor(Number(b.hora)) || 0)));
+  if (b.ativo !== undefined) {
+    const t = { ...telegram.cfg(), ...(novo.telegram_token ? { token: novo.telegram_token } : {}), ...('telegram_chat_id' in novo ? { chat: novo.telegram_chat_id } : {}) };
+    if (b.ativo && (!t.token || !t.chat)) return res.status(400).json({ erro: 'Para ativar, informe o token do bot e o ID do chat.' });
+    novo.telegram_ativo = b.ativo ? '1' : '0';
+  }
+  if (b.remover_token) { novo.telegram_token = ''; novo.telegram_ativo = '0'; }
+  setConfig(0, novo);
+  auditar(req, 'telegram_configurado', 'settings', null, { ativo: b.ativo, frequencia: b.frequencia, hora: b.hora, token_alterado: !!novo.telegram_token }, null);
+  res.json({ ok: true });
+});
+
+router.post('/telegram/descobrir', async (req, res) => {
+  try {
+    const chats = await telegram.descobrir(tokenDe(req.body));
+    res.json({ chats });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+
+router.post('/telegram/testar', async (req, res) => {
+  try {
+    const chat = String((req.body || {}).chat_id || '').trim() || telegram.cfg().chat;
+    if (!chat) return res.status(400).json({ erro: 'Informe o ID do chat.' });
+    res.json(await telegram.testar(tokenDe(req.body), chat));
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+
+router.post('/telegram/enviar', async (req, res) => {
+  try {
+    const r = await telegram.enviarBackup('manual');
+    auditar(req, 'backup_telegram', 'sistema', null, { arquivo: r.arquivo }, null);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+
+// ── Exportar agora (download direto, compactado) ────────────────────────────
+router.get('/backup-exportar', async (req, res) => {
+  try {
+    const b = await backup.criarCompactado();
+    auditar(req, 'backup_exportado', 'sistema', null, { arquivo: b.nome }, null);
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + b.nome + '"');
+    res.send(b.dados);
+  } catch (e) { res.status(500).json({ erro: 'Falha ao exportar: ' + e.message }); }
+});
+
+// ── Importar backup (substitui todos os dados) ──────────────────────────────
+function conferirSenha(req) {
+  let senha = '';
+  try { senha = Buffer.from(String(req.headers['x-senha'] || ''), 'base64').toString('utf8'); } catch (e) {}
+  const u = db.prepare('SELECT senha_hash FROM users WHERE id = ?').get(req.user.id);
+  return !!(u && senha && bcrypt.compareSync(senha, u.senha_hash));
+}
+
+router.post('/backup-validar', express.raw({ type: '*/*', limit: '300mb' }), (req, res) => {
+  try {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ erro: 'Escolha o arquivo de backup.' });
+    const { tmp, info } = backup.validar(req.body);
+    try { fs.unlinkSync(tmp); } catch (e) {}
+    res.json({ ok: true, backup: info, atual: backup.resumoAtual() });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
+});
+
+router.post('/backup-importar', express.raw({ type: '*/*', limit: '300mb' }), async (req, res) => {
+  if (!conferirSenha(req)) return res.status(403).json({ erro: 'Senha incorreta. Importação não autorizada.' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ erro: 'Escolha o arquivo de backup.' });
+  const quem = { ...req.user };
+  try {
+    const r = await backup.importar(req.body);
+    auditar({ ...req, user: quem }, 'backup_importado', 'sistema', null, { ...r.info, seguranca: r.seguranca }, null);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ erro: e.message }); }
 });
 
 module.exports = router;

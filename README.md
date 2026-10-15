@@ -58,6 +58,29 @@ index.html, estilo.css, tela-*.js   telas
 Todo cliente, registro, parcela, pagamento e lembrete tem `admin_id`. Toda consulta filtra pelo
 administrador logado, então um administrador nunca vê dados de outro.
 
+## Backup (exportar, importar e Telegram)
+
+Tudo fica em **Sistema** no painel do Super Admin:
+
+- **Exportar backup agora:** baixa um arquivo `.db.gz` com todos os dados.
+- **Importar backup:** aceita `.db.gz` ou `.db`. O sistema confere o arquivo, mostra o que tem nele,
+  pede a senha do Super Admin e guarda uma cópia dos dados atuais antes de substituir.
+- **Telegram:** informe o token do bot (do @BotFather) e o ID do chat (botão *Descobrir meu ID*),
+  escolha a frequência (diário no horário escolhido, a cada 12 h, a cada 6 h ou semanal) e ligue o
+  envio automático. Se o envio falhar, ele tenta de novo em 10, 20... até 60 minutos.
+- Um backup diário também fica guardado no servidor, em `/data/backups`.
+
+## Instalar no celular (aplicativo)
+
+O sistema é um PWA: no Android, abra o endereço no **Chrome** e toque em **Instalar aplicativo**
+(aparece na tela de login, no menu *Mais* ou nos três pontinhos do Chrome). Ele ganha ícone na tela
+inicial e abre em tela cheia. No iPhone: Safari → Compartilhar → Adicionar à Tela de Início.
+
+Para aparecer a opção de instalar, o site precisa abrir com **https** (domínio configurado no
+EasyPanel). Pelo endereço IP:porta o Chrome não deixa instalar.
+
+Arquivos do app: `manifest.json`, `sw.js` e `icone-*.png`.
+
 ## Lembretes e WhatsApp
 
 A cada 15 minutos o agendador prepara os lembretes do dia conforme as configurações de cada

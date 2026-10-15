@@ -135,7 +135,8 @@ const ACOES_AUDIT = {
   registro_criado: 'Registro criado', registro_editado: 'Registro editado', registro_cancelado: 'Registro cancelado',
   parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
   config_alterada: 'Configurações alteradas', modelo_alterado: 'Modelo de mensagem alterado', config_sistema: 'Configuração do sistema',
-  backup_criado: 'Backup criado', backup_baixado: 'Backup baixado',
+  backup_criado: 'Backup criado', backup_baixado: 'Backup baixado', backup_exportado: 'Backup exportado',
+  backup_telegram: 'Backup enviado ao Telegram', backup_importado: 'Backup importado', telegram_configurado: 'Telegram configurado',
 };
 
 function resumoDetalhes(det) {
@@ -197,35 +198,168 @@ Super.avisos = async el => {
   if (b) b.onclick = async () => { await POST('/super/notificacoes/lidas'); App.recarregar(); };
 };
 
+const FREQ_BK = { diario: 'Uma vez por dia', '12h': 'A cada 12 horas', '6h': 'A cada 6 horas', semanal: 'Uma vez por semana' };
+const tamanhoArq = b => b > 1048576 ? (b / 1048576).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+
+async function baixarArquivo(url, nome) {
+  const res = await fetch('/api' + url, { headers: { Authorization: 'Bearer ' + Sessao.token } });
+  if (!res.ok) { let j = {}; try { j = await res.json(); } catch (e) {} throw new Error(j.erro || 'Não foi possível baixar.'); }
+  const disp = res.headers.get('Content-Disposition') || '';
+  const m = disp.match(/filename="([^"]+)"/);
+  const link = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a'); a.href = link; a.download = nome || (m && m[1]) || 'backup.db.gz';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(link), 8000);
+}
+
+async function enviarBinario(url, arquivo, senha) {
+  const headers = { Authorization: 'Bearer ' + Sessao.token, 'Content-Type': 'application/octet-stream' };
+  if (senha) headers['X-Senha'] = btoa(unescape(encodeURIComponent(senha)));
+  const res = await fetch('/api' + url, { method: 'POST', headers, body: await arquivo.arrayBuffer() });
+  let j = {}; try { j = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error(j.erro || 'Erro ' + res.status);
+  return j;
+}
+
+function statusTelegram(t) {
+  if (!t.ultimo_status) return '<span class="muted">Nenhum backup enviado ainda.</span>';
+  const [tipo, origem, msg] = t.ultimo_status.split('|');
+  const quando = t.ultimo_envio ? dataHora(t.ultimo_envio) : '';
+  return tipo === 'ok'
+    ? `<span class="selo s-pago">Último envio ok</span> <span class="muted">${quando} · ${origem === 'automatico' ? 'automático' : 'manual'}</span>`
+    : `<span class="selo s-atrasado">Falhou</span> <span class="muted">${esc(msg || '')}</span>`;
+}
+
 Super.sistema = async el => {
   carregando(el);
   const c = await GET('/super/config');
-  el.innerHTML = `<div class="topo"><div><h1>Sistema</h1><p>Configurações gerais e cópias de segurança</p></div></div>
+  const t = c.telegram;
+  const r = c.resumo;
+  el.innerHTML = `<div class="topo"><div><h1>Sistema</h1><p>Backups, Telegram e configurações gerais</p></div></div>
     <div class="grade grade-2" style="align-items:start">
-      <div class="painel"><h2 style="margin-bottom:12px">Preferências do sistema</h2>
-        <div class="campo"><label>Nome do sistema</label><input class="entrada" id="si-nome" value="${esc(c.sistema_nome)}"></div>
-        <div class="campo"><label>Contato de suporte</label><input class="entrada" id="si-sup" placeholder="WhatsApp ou e-mail" value="${esc(c.suporte_contato)}"><small>Aparece na tela de login.</small></div>
-        <button class="btn" id="si-salvar">Salvar</button></div>
-      <div class="painel"><div class="painel-topo"><h2>Backups</h2><button class="btn btn-p" id="si-bk">Fazer backup agora</button></div>
-        <p class="muted" style="margin-top:0">Um backup automático é feito por dia. Os 14 mais recentes ficam guardados.</p>
-        <div class="lista">${c.backups.length ? c.backups.map(b => `<div class="item"><div><div class="item-titulo" style="font-size:14px">${esc(b.arquivo)}</div><div class="item-sub">${(b.tamanho / 1024).toFixed(0)} KB</div></div>
-          <div><button class="btn btn-p btn-claro" data-bk="${esc(b.arquivo)}">Baixar</button></div></div>`).join('') : '<div class="vazio">Nenhum backup ainda.</div>'}</div></div>
-      <div class="painel"><h2 style="margin-bottom:12px">Minha senha</h2>
-        <div class="campo"><label>Senha atual</label><input class="entrada" type="password" id="si-s1"></div>
-        <div class="campo"><label>Nova senha</label><input class="entrada" type="password" id="si-s2"></div>
-        <button class="btn" id="si-senha">Trocar senha</button></div>
+      <div>
+        <div class="painel"><div class="painel-topo"><h2>Backup</h2></div>
+          <p class="muted" style="margin-top:0">Agora o sistema tem ${r.administradores} administrador(es), ${r.clientes} cliente(s), ${r.registros} registro(s) e ${r.pagamentos} pagamento(s). Um backup automático é guardado no servidor todo dia.</p>
+          <div class="grade" style="gap:8px">
+            <button class="btn btn-grande" id="bk-exportar">⬇️ Exportar backup agora</button>
+            <button class="btn btn-claro btn-grande" id="bk-tg-agora" ${t.token_salvo && t.chat_id ? '' : 'disabled title="Configure o Telegram primeiro"'}>📨 Enviar backup ao Telegram agora</button>
+            <button class="btn btn-perigo btn-grande" id="bk-importar">⬆️ Importar backup</button>
+          </div>
+          <input type="file" id="bk-arquivo" accept=".db,.gz,application/gzip,application/octet-stream" hidden>
+        </div>
+
+        <div class="painel" id="tg"><div class="painel-topo"><h2>Backup automático no Telegram</h2>${t.ativo ? '<span class="selo s-pago">Ligado</span>' : '<span class="selo s-cancelado">Desligado</span>'}</div>
+          <p style="margin-top:0">${statusTelegram(t)}</p>
+          <details ${t.token_salvo ? '' : 'open'} style="margin-bottom:14px"><summary style="cursor:pointer;font-weight:600">Como criar o bot (passo a passo)</summary>
+            <ol class="muted" style="padding-left:20px;margin:10px 0 0;line-height:1.7">
+              <li>No Telegram, procure <b>@BotFather</b> e mande <b>/newbot</b>.</li>
+              <li>Escolha um nome e um usuário terminado em <b>bot</b> (ex.: controlefacil_backup_bot).</li>
+              <li>Ele responde com o <b>token</b>. Copie e cole no campo abaixo.</li>
+              <li>Abra o seu bot no Telegram e toque em <b>Iniciar</b> (ou mande "oi").</li>
+              <li>Volte aqui e toque em <b>Descobrir meu ID</b>.</li>
+            </ol></details>
+          <div class="campo"><label>Token do bot</label>
+            <input class="entrada" id="tg-token" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${t.token_salvo ? esc(t.token_mascara) + ' (salvo, deixe em branco para manter)' : '123456789:ABCdef...'}"></div>
+          <div class="campo"><label>ID do chat</label>
+            <div style="display:flex;gap:8px"><input class="entrada" id="tg-chat" inputmode="numeric" value="${esc(t.chat_id)}" placeholder="Ex.: 123456789">
+            <button class="btn btn-claro" id="tg-descobrir" style="flex-shrink:0">Descobrir meu ID</button></div>
+            <div id="tg-chats"></div></div>
+          <div class="linha-campos">
+            <div class="campo"><label>Frequência</label><select class="entrada" id="tg-freq">${Object.entries(FREQ_BK).map(([k, v]) => `<option value="${k}" ${k === t.frequencia ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+            <div class="campo" id="tg-hora-c"><label>Horário (Brasília)</label><select class="entrada" id="tg-hora">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === t.hora ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></div>
+          </div>
+          <label class="check"><input type="checkbox" id="tg-ativo" ${t.ativo ? 'checked' : ''}> Enviar backup automaticamente</label>
+          <div class="acoes mt"><button class="btn" id="tg-salvar">Salvar</button><button class="btn btn-claro" id="tg-testar">Testar conexão</button>
+            ${t.token_salvo ? '<button class="btn btn-perigo" id="tg-remover">Remover bot</button>' : ''}</div>
+        </div>
+      </div>
+      <div>
+        <div class="painel"><div class="painel-topo"><h2>Backups no servidor</h2><button class="btn btn-p btn-claro" id="si-bk">Fazer backup</button></div>
+          <div class="lista">${c.backups.length ? c.backups.map(b => `<div class="item"><div style="min-width:0"><div class="item-titulo" style="font-size:14px">${dataHora(b.criado_em)}${b.arquivo.includes('antes-importar') ? ' <span class="selo s-hoje">antes de importar</span>' : ''}</div>
+            <div class="item-sub">${tamanhoArq(b.tamanho)}</div></div>
+            <div><button class="btn btn-p btn-claro" data-bk="${esc(b.arquivo)}">Baixar</button></div></div>`).join('') : '<div class="vazio">Nenhum backup ainda.</div>'}</div></div>
+        <div class="painel"><h2 style="margin-bottom:12px">Preferências do sistema</h2>
+          <div class="campo"><label>Nome do sistema</label><input class="entrada" id="si-nome" value="${esc(c.sistema_nome)}"></div>
+          <div class="campo"><label>Contato de suporte</label><input class="entrada" id="si-sup" placeholder="WhatsApp ou e-mail" value="${esc(c.suporte_contato)}"><small>Aparece na tela de login.</small></div>
+          <button class="btn" id="si-salvar">Salvar</button></div>
+        <div class="painel"><h2 style="margin-bottom:12px">Minha senha</h2>
+          <div class="campo"><label>Senha atual</label><input class="entrada" type="password" id="si-s1"></div>
+          <div class="campo"><label>Nova senha</label><input class="entrada" type="password" id="si-s2"></div>
+          <button class="btn" id="si-senha">Trocar senha</button></div>
+      </div>
     </div>`;
   const $ = s => el.querySelector(s);
-  $('#si-salvar').onclick = async () => { try { await PUT('/super/config', { sistema_nome: $('#si-nome').value, suporte_contato: $('#si-sup').value }); toast('Salvo.', 'ok'); } catch (e) { falha(e); } };
-  $('#si-bk').onclick = async () => { try { await POST('/super/backup'); toast('Backup criado.', 'ok'); App.recarregar(); } catch (e) { falha(e); } };
-  el.querySelectorAll('[data-bk]').forEach(b => b.onclick = async () => {
-    try {
-      const res = await fetch('/api/super/backup/' + encodeURIComponent(b.dataset.bk), { headers: { Authorization: 'Bearer ' + Sessao.token } });
-      if (!res.ok) throw new Error('Não foi possível baixar o backup.');
-      const url = URL.createObjectURL(await res.blob());
-      const a = document.createElement('a'); a.href = url; a.download = b.dataset.bk; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (e) { falha(e); }
+  const ocupado = async (btn, texto, fn) => {
+    const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = texto;
+    try { await fn(); } catch (e) { falha(e); } finally { if (document.body.contains(btn)) { btn.disabled = false; btn.innerHTML = orig; } }
+  };
+  const horaVisivel = () => { $('#tg-hora-c').hidden = !['diario', 'semanal'].includes($('#tg-freq').value); };
+  $('#tg-freq').addEventListener('change', horaVisivel); horaVisivel();
+
+  // Exportar / enviar
+  $('#bk-exportar').onclick = e => ocupado(e.currentTarget, 'Gerando…', async () => { await baixarArquivo('/super/backup-exportar'); toast('Backup exportado.', 'ok'); });
+  $('#bk-tg-agora').onclick = e => ocupado(e.currentTarget, 'Enviando…', async () => {
+    const r = await POST('/super/telegram/enviar'); toast('Backup enviado ao Telegram (' + tamanhoArq(r.tamanho) + ').', 'ok'); App.recarregar();
   });
+  $('#si-bk').onclick = e => ocupado(e.currentTarget, 'Criando…', async () => { await POST('/super/backup'); toast('Backup criado.', 'ok'); App.recarregar(); });
+  el.querySelectorAll('[data-bk]').forEach(b => b.onclick = () => ocupado(b, '…', () => baixarArquivo('/super/backup/' + encodeURIComponent(b.dataset.bk), b.dataset.bk)));
+
+  // Importar
+  $('#bk-importar').onclick = () => { $('#bk-arquivo').value = ''; $('#bk-arquivo').click(); };
+  $('#bk-arquivo').onchange = async () => {
+    const arq = $('#bk-arquivo').files[0];
+    if (!arq) return;
+    let v;
+    try { toast('Conferindo o arquivo…'); v = await enviarBinario('/super/backup-validar', arq); } catch (e) { return falha(e); }
+    const linha = x => `${x.administradores} administrador(es), ${x.clientes} cliente(s), ${x.registros} registro(s), ${x.pagamentos} pagamento(s)`;
+    const m = abrirModal({
+      titulo: 'Importar backup',
+      subtitulo: esc(arq.name) + ' · ' + tamanhoArq(arq.size),
+      corpo: `<div class="aviso erro" style="margin-top:0"><b>Atenção:</b> todos os dados atuais serão substituídos pelos dados deste backup.</div>
+        <div class="conta"><div><span>Dados atuais</span><b style="text-align:right">${linha(v.atual)}</b></div>
+        <div><span>Dados do backup</span><b style="text-align:right">${linha(v.backup)}</b></div></div>
+        <p class="muted">Antes de importar, o sistema guarda uma cópia dos dados atuais. Se precisar, ela aparece em "Backups no servidor".</p>
+        <div class="campo"><label>Digite sua senha para confirmar</label><input class="entrada" type="password" id="im-senha" autocomplete="current-password"></div>`,
+      rodape: '<button class="btn btn-claro" data-fechar>Cancelar</button><button class="btn btn-perigo" id="im-ok">Substituir dados</button>',
+    });
+    m.querySelector('#im-ok').onclick = e => ocupado(e.currentTarget, 'Importando…', async () => {
+      const senha = m.querySelector('#im-senha').value;
+      if (!senha) throw new Error('Digite sua senha.');
+      const r = await enviarBinario('/super/backup-importar', arq, senha);
+      fecharModal();
+      abrirModal({
+        titulo: 'Backup importado',
+        corpo: `<p style="margin-top:0">Os dados foram restaurados: ${linha(r.info)}.</p><p class="muted">Por segurança, entre novamente no sistema.</p>`,
+        rodape: '<button class="btn" id="im-sair">Entrar novamente</button>',
+      }).querySelector('#im-sair').onclick = () => { Sessao.limpar(); location.hash = ''; location.reload(); };
+    });
+  };
+
+  // Telegram
+  const dadosTg = () => ({ token: $('#tg-token').value.trim(), chat_id: $('#tg-chat').value.trim() });
+  $('#tg-descobrir').onclick = e => ocupado(e.currentTarget, 'Buscando…', async () => {
+    const r = await POST('/super/telegram/descobrir', dadosTg());
+    const box = $('#tg-chats');
+    if (!r.chats.length) { box.innerHTML = '<div class="aviso">Nenhuma conversa encontrada. Abra o seu bot no Telegram, toque em <b>Iniciar</b> ou mande "oi", e tente de novo.</div>'; return; }
+    if (r.chats.length === 1) { $('#tg-chat').value = r.chats[0].id; box.innerHTML = '<small class="muted">Encontrado: ' + esc(r.chats[0].nome) + '</small>'; toast('ID encontrado.', 'ok'); return; }
+    box.innerHTML = '<div class="chips" style="margin-top:8px">' + r.chats.map(c => `<button type="button" class="chip" data-chat="${esc(c.id)}">${esc(c.nome)} (${c.tipo === 'private' ? 'você' : 'grupo'})</button>`).join('') + '</div>';
+    box.querySelectorAll('[data-chat]').forEach(b => b.onclick = () => { $('#tg-chat').value = b.dataset.chat; box.querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === b)); });
+  });
+  $('#tg-testar').onclick = e => ocupado(e.currentTarget, 'Testando…', async () => {
+    const r = await POST('/super/telegram/testar', dadosTg());
+    toast('Conectado ao bot @' + r.bot + '. Veja a mensagem no Telegram.', 'ok');
+  });
+  $('#tg-salvar').onclick = e => ocupado(e.currentTarget, 'Salvando…', async () => {
+    await PUT('/super/telegram', { ...dadosTg(), frequencia: $('#tg-freq').value, hora: $('#tg-hora').value, ativo: $('#tg-ativo').checked });
+    toast($('#tg-ativo').checked ? 'Backup automático ligado.' : 'Configuração salva.', 'ok');
+    App.recarregar();
+  });
+  const rm = $('#tg-remover');
+  if (rm) rm.onclick = async () => {
+    if (!await confirmar('Remover bot', 'O backup automático pelo Telegram será desligado.', 'Remover', true)) return;
+    try { await PUT('/super/telegram', { remover_token: true }); toast('Bot removido.', 'ok'); App.recarregar(); } catch (e) { falha(e); }
+  };
+
+  $('#si-salvar').onclick = async () => { try { await PUT('/super/config', { sistema_nome: $('#si-nome').value, suporte_contato: $('#si-sup').value }); toast('Salvo.', 'ok'); } catch (e) { falha(e); } };
   $('#si-senha').onclick = async () => { try { await PUT('/auth/senha', { atual: $('#si-s1').value, nova: $('#si-s2').value }); $('#si-s1').value = $('#si-s2').value = ''; toast('Senha alterada.', 'ok'); } catch (e) { falha(e); } };
 };

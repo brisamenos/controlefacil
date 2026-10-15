@@ -26,13 +26,23 @@ function dataMes(ano, mes, dia) {
 }
 function diaSemana(iso) { return new Date(iso + 'T12:00:00Z').getUTCDay(); }
 
+// Dias da semana em que pode haver cobrança (0 = domingo ... 6 = sábado)
+function lerDiasCobranca(entrada) {
+  if (Array.isArray(entrada.dias_cobranca)) {
+    const dias = [...new Set(entrada.dias_cobranca.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))].sort();
+    if (!dias.length) throw erro('Marque pelo menos um dia da semana para cobrar.');
+    return dias;
+  }
+  return entrada.pular_domingos ? [1, 2, 3, 4, 5, 6] : [0, 1, 2, 3, 4, 5, 6];
+}
+
 // Gera as datas de vencimento conforme a frequência
 function gerarDatas(freq, qtd, cfg, ref) {
   const datas = [];
   if (freq === 'diario') {
     let d = cfg.data_inicial || addDias(ref, 1);
     while (datas.length < qtd) {
-      if (!(cfg.pular_domingos && diaSemana(d) === 0)) datas.push(d);
+      if (cfg.dias_cobranca.includes(diaSemana(d))) datas.push(d);
       d = addDias(d, 1);
     }
   } else if (freq === 'semanal') {
@@ -65,7 +75,7 @@ function gerarDatas(freq, qtd, cfg, ref) {
 /**
  * Gera a simulação completa.
  * entrada: { valor_principal, percentual, frequencia, qtd_parcelas?, valor_parcela?,
- *            data_inicial?, dia_semana?, dia_mes?, intervalo_dias?, pular_domingos? }
+ *            data_inicial?, dia_semana?, dia_mes?, intervalo_dias?, dias_cobranca? }
  * Informe a quantidade de parcelas OU o valor da parcela: o outro é calculado.
  */
 function simular(entrada, ref = hoje()) {
@@ -92,7 +102,7 @@ function simular(entrada, ref = hoje()) {
   const cfg = {
     data_inicial: entrada.data_inicial || null,
     dia_semana: entrada.dia_semana, dia_mes: entrada.dia_mes,
-    intervalo_dias: entrada.intervalo_dias, pular_domingos: !!entrada.pular_domingos,
+    intervalo_dias: entrada.intervalo_dias, dias_cobranca: lerDiasCobranca(entrada),
   };
   const datas = gerarDatas(freq, qtd, cfg, ref);
 
@@ -105,4 +115,4 @@ function simular(entrada, ref = hoje()) {
   return { ...tot, frequencia: freq, qtd_parcelas: qtd, valor_parcela: base / 100, config: cfg, parcelas };
 }
 
-module.exports = { simular, calcularTotais, FREQUENCIAS };
+module.exports = { lerDiasCobranca, simular, calcularTotais, FREQUENCIAS };
