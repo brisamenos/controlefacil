@@ -1,6 +1,6 @@
 // sw.js — permite instalar o app e abrir rápido.
 // Os dados (API) vêm sempre do servidor, nunca do cache, para não mostrar valores velhos.
-const VERSAO = 'cf-v1';
+const VERSAO = 'cf-v2';
 const ARQUIVOS = ['/', '/estilo.css', '/tela-base.js', '/tela-admin.js', '/tela-super.js', '/tela-app.js',
                   '/manifest.json', '/icone-192.png', '/icone-512.png'];
 

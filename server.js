@@ -17,9 +17,11 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+const VERSAO_APP = String(Date.now());
 app.get('/api/publico', (req, res) => {
   const c = require('./util').getConfig(0);
-  res.json({ sistema_nome: c.sistema_nome, suporte_contato: c.suporte_contato });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ sistema_nome: c.sistema_nome, suporte_contato: c.suporte_contato, versao: VERSAO_APP });
 });
 app.use('/api/auth',      require('./rotas-auth'));
 app.use('/api/super',     require('./rotas-super'));
@@ -37,10 +39,10 @@ const PUBLICOS = { '/estilo.css': 'text/css', '/tela-base.js': 'application/java
                    '/icone-192.png': 'image/png', '/icone-512.png': 'image/png', '/icone-mascara.png': 'image/png', '/icone-apple.png': 'image/png' };
 app.get(Object.keys(PUBLICOS), (req, res) => {
   res.type(PUBLICOS[req.path]);
-  if (req.path === '/sw.js') res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache'); // sempre confere se há versão nova
   res.sendFile(path.join(__dirname, req.path.slice(1)));
 });
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('*', (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'index.html')); });
 
 app.use((err, req, res, next) => {
   console.error(err);

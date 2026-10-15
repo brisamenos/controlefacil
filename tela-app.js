@@ -171,6 +171,40 @@ async function iniciar() {
   }
   window.addEventListener('hashchange', () => { fecharModal(); rotear(); });
   rotear();
+  vigiarVersao();
+}
+
+/* ── Atualização automática quando o sistema for implantado de novo ── */
+let versaoCarregada = null, avisoVersao = false, ultimaConferencia = 0;
+async function conferirVersao(forcar) {
+  if (!forcar && Date.now() - ultimaConferencia < 20000) return; // no máximo a cada 20 s
+  ultimaConferencia = Date.now();
+  try {
+    const r = await fetch('/api/publico', { cache: 'no-store' }).then(x => x.json());
+    if (!r.versao) return;
+    if (!versaoCarregada) { versaoCarregada = r.versao; return; }
+    if (r.versao === versaoCarregada || avisoVersao) return;
+    // Se houver uma janela aberta (algo sendo digitado), pergunta antes
+    if (document.getElementById('modal-atual')) {
+      avisoVersao = true;
+      const b = document.createElement('div');
+      b.className = 'toast'; b.style.cssText = 'display:flex;gap:12px;align-items:center;justify-content:space-between';
+      b.innerHTML = '<span>Nova versão disponível.</span><button class="btn btn-p" style="min-height:32px">Atualizar</button>';
+      b.querySelector('button').onclick = () => location.reload();
+      document.getElementById('toasts').appendChild(b);
+      return;
+    }
+    location.reload();
+  } catch (e) {}
+}
+function vigiarVersao() {
+  conferirVersao(true);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') conferirVersao(true); });
+  window.addEventListener('focus', () => conferirVersao(true));
+  window.addEventListener('pageshow', () => conferirVersao(true));
+  window.addEventListener('online', () => conferirVersao(true));
+  window.addEventListener('hashchange', () => conferirVersao());   // a cada troca de tela
+  setInterval(() => conferirVersao(true), 2 * 60 * 1000);
 }
 /* ── Instalar como aplicativo (Android/Chrome) ─────────── */
 let pedidoInstalar = null;
