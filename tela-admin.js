@@ -396,7 +396,7 @@ Admin.cliente = async (el, id) => {
         ${reg.observacoes ? '<p class="muted" style="margin:10px 0 0">' + esc(reg.observacoes) + '</p>' : ''}
         <div class="acoes mt">
           <button class="btn btn-p btn-claro" onclick="historicoRegistro(${reg.id})">${I.hist} Histórico</button>
-          ${pode('registros') ? `<button class="btn btn-p btn-claro" onclick="editarRegistro(${reg.id})">Editar descrição</button>` : ''}
+          ${pode('registros') && reg.status !== 'cancelado' ? `<a class="btn btn-p" href="#/novo?editar=${reg.id}">✏️ Editar registro</a>` : ''}
           ${reg.status === 'ativo' && pode('registros') ? `<button class="btn btn-p btn-perigo" onclick="cancelarRegistro(${reg.id})">Cancelar registro</button>` : ''}
         </div></div>`;
     }).join('') : `<div class="painel vazio">Nenhum registro para este cliente.${pode('registros') ? `<br><a class="btn" href="#/novo?cliente=${c.id}">Criar registro</a>` : ''}</div>`}
@@ -413,10 +413,20 @@ Admin.cliente = async (el, id) => {
   };
 };
 
-async function cancelarRegistro(id) {
-  const motivo = await pedirTexto('Cancelar registro', 'Motivo do cancelamento', 'Cancelar registro', true);
-  if (!motivo) return;
-  try { await POST('/registros/' + id + '/cancelar', { motivo }); toast('Registro cancelado.', 'ok'); App.recarregar(); } catch (e) { falha(e); }
+function cancelarRegistro(id) {
+  const reg = (window.__reg || {})[id] || {};
+  const m = abrirModal({
+    titulo: 'Cancelar registro',
+    subtitulo: esc(reg.descricao || '') + (reg.total ? ' · ' + moeda(reg.total) : ''),
+    corpo: `<p style="margin-top:0">As parcelas em aberto deixam de ser cobradas. Os pagamentos já recebidos continuam no histórico.</p>
+      <div class="campo"><label>Motivo <span class="muted" style="font-weight:500">(opcional)</span></label><input class="entrada" id="cr-motivo" placeholder="Ex.: cliente devolveu o produto"></div>`,
+    rodape: '<button class="btn btn-claro" data-fechar>Voltar</button><button class="btn btn-perigo" id="cr-ok">Cancelar registro</button>',
+  });
+  m.querySelector('#cr-ok').onclick = async e => {
+    e.currentTarget.disabled = true;
+    try { await POST('/registros/' + id + '/cancelar', { motivo: m.querySelector('#cr-motivo').value }); fecharModal(); toast('Registro cancelado.', 'ok'); App.recarregar(); }
+    catch (err) { falha(err); e.currentTarget.disabled = false; }
+  };
 }
 function editarRegistro(id) {
   const reg = (window.__reg || {})[id] || {};
@@ -465,10 +475,29 @@ Admin.novo = async el => {
     intervalo_dias: 10, dias_cobranca: [...CFG.dias_cobranca], sim: null, parcelas: null, editado: false,
   };
   if (q.cliente) { try { const d = await GET('/clientes/' + q.cliente); st.cliente = { id: d.cliente.id, nome: d.cliente.nome }; } catch (e) {} }
+  // Modo edição: carrega o registro e preenche tudo
+  const editId = Number(q.editar) || 0;
+  let reg = null;
+  if (editId) {
+    reg = await GET('/registros/' + editId);
+    if (reg.status === 'cancelado') throw new Error('Registro cancelado não pode ser editado.');
+    const cfg = reg.config || {};
+    const primeira = (reg.parcelas[0] || {}).vencimento || '';
+    Object.assign(st, {
+      cliente: { id: reg.client_id, nome: reg.cliente }, descricao: reg.descricao, valor: reg.valor_principal, percentual: reg.percentual,
+      frequencia: reg.frequencia, modo: 'qtd', qtd: reg.qtd_parcelas, ancora: primeira,
+      data_inicial: ['diario', 'quinzenal', 'personalizado'].includes(reg.frequencia) ? (cfg.data_inicial || primeira) : '',
+      dia_semana: cfg.dia_semana ?? st.dia_semana, dia_mes: cfg.dia_mes ?? Number(primeira.slice(8, 10)) ?? st.dia_mes,
+      intervalo_dias: cfg.intervalo_dias || st.intervalo_dias,
+      dias_cobranca: Array.isArray(cfg.dias_cobranca) ? cfg.dias_cobranca : (cfg.pular_domingos ? [1, 2, 3, 4, 5, 6] : st.dias_cobranca),
+    });
+    st.pagas = reg.parcelas.filter(p => p.status === 'pago' || p.valor_pago > 0).length;
+  }
 
   el.innerHTML = `
     <button class="voltar" onclick="history.back()">${I.voltar} Voltar</button>
-    <div class="topo"><div><h1>Novo registro</h1><p>Preencha e confira as parcelas antes de salvar.</p></div></div>
+    <div class="topo"><div><h1>${editId ? 'Editar registro' : 'Novo registro'}</h1><p>${editId ? 'Mude o que precisar e confira as parcelas antes de salvar.' : 'Preencha e confira as parcelas antes de salvar.'}</p></div></div>
+    ${editId && st.pagas ? `<div class="aviso info">Este registro tem <b>${st.pagas} parcela(s) com pagamento</b>. Elas continuam como estão; o sistema recalcula só as que faltam.</div>` : ''}
     <div class="novo-layout">
       <div class="painel" style="padding-top:4px">
         <div class="passo"><div class="passo-n">1</div><div><h3>Cliente</h3>
@@ -493,7 +522,7 @@ Admin.novo = async el => {
       <div class="fixo">
         <div class="painel"><h2 style="margin-bottom:8px">Resumo</h2><div id="nr-resumo"><p class="muted">Informe o valor para ver o cálculo.</p></div></div>
         <div class="mt" id="nr-parcelas"></div>
-        <button class="btn btn-grande mt" id="nr-salvar" disabled>${I.ok} Criar registro</button>
+        <button class="btn btn-grande mt" id="nr-salvar" disabled>${I.ok} ${editId ? 'Salvar alterações' : 'Criar registro'}</button>
       </div>
     </div>`;
   const $ = s => el.querySelector(s);
@@ -503,7 +532,8 @@ Admin.novo = async el => {
     const box = $('#nr-cli');
     if (st.cliente) {
       box.innerHTML = `<div class="item" style="border:1px solid var(--linha);border-radius:var(--r-sm);padding:10px 12px">
-        <div class="item-titulo">${esc(st.cliente.nome)}</div><div><button class="link-btn" id="nr-cli-trocar">Trocar</button></div></div>`;
+        <div class="item-titulo">${esc(st.cliente.nome)}</div><div>${editId ? '' : '<button class="link-btn" id="nr-cli-trocar">Trocar</button>'}</div></div>`;
+      if (editId) return;
       $('#nr-cli-trocar').onclick = () => { st.cliente = null; desenharCliente(); validar(); };
       return;
     }
@@ -587,14 +617,24 @@ Admin.novo = async el => {
     const vi = $('#nr-vp'); if (vi) vi.addEventListener('input', e => { st.valor_parcela = lerMoeda(e.target.value); simular(); });
   };
   $('#nr-modo').querySelectorAll('button').forEach(b => b.onclick = () => { st.modo = b.dataset.v; campoModo(); simular(); });
-  $('#nr-freq').querySelector('[data-v="mensal"]').classList.add('sel');
+  $('#nr-freq').querySelector(`[data-v="${st.frequencia}"]`).classList.add('sel');
+  if (editId) {
+    $('#nr-desc').value = st.descricao;
+    $('#nr-descs').querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x.dataset.v === st.descricao));
+    $('#nr-valor').value = moeda(st.valor).replace('R$ ', '');
+    $('#nr-obs').value = reg.observacoes || '';
+    if (!CFG.percentuais.map(Number).includes(Number(st.percentual)) && Number(st.percentual) !== 0) {
+      $('#nr-pct-outro').hidden = false; $('#nr-pct-outro').value = String(st.percentual).replace('.', ',');
+    }
+    marcarPct();
+  }
   camposFreq(); campoModo();
 
   // Simulação no servidor (mesma regra usada ao salvar)
   const corpo = () => ({
     valor_principal: st.valor, percentual: st.percentual, frequencia: st.frequencia,
     qtd_parcelas: st.modo === 'qtd' ? st.qtd : 0, valor_parcela: st.modo === 'valor' ? st.valor_parcela : 0,
-    data_inicial: ['diario', 'quinzenal', 'personalizado'].includes(st.frequencia) ? (st.data_inicial || ($('#nr-dini') || {}).value || '') : '',
+    data_inicial: ['diario', 'quinzenal', 'personalizado'].includes(st.frequencia) ? (st.data_inicial || ($('#nr-dini') || {}).value || '') : (editId ? st.ancora : ''),
     dia_semana: st.dia_semana, dia_mes: st.dia_mes, intervalo_dias: st.intervalo_dias, dias_cobranca: st.frequencia === 'diario' ? st.dias_cobranca : undefined,
   });
   let seq = 0;
@@ -603,7 +643,7 @@ Admin.novo = async el => {
     if (!st.valor) { $('#nr-resumo').innerHTML = '<p class="muted">Informe o valor para ver o cálculo.</p>'; $('#nr-parcelas').innerHTML = ''; validar(); return; }
     const meu = ++seq;
     try {
-      const s = await POST('/registros/simular', corpo());
+      const s = await POST(editId ? '/registros/' + editId + '/simular-edicao' : '/registros/simular', corpo());
       if (meu !== seq) return;
       st.sim = s; st.parcelas = s.parcelas.map(p => ({ ...p }));
       desenharResumo(); desenharParcelas();
@@ -616,20 +656,26 @@ Admin.novo = async el => {
 
   const desenharResumo = () => {
     const s = st.sim, soma = st.parcelas.reduce((t, p) => t + p.valor, 0);
-    const iguais = st.parcelas.every(p => Math.abs(p.valor - st.parcelas[0].valor) < 0.005);
-    const ultimoDif = !iguais && st.parcelas.slice(0, -1).every(p => Math.abs(p.valor - st.parcelas[0].valor) < 0.005);
+    const livres = st.parcelas.filter(p => !p.fixa), nFix = st.parcelas.length - livres.length;
+    const ref = livres.length ? livres : st.parcelas;
+    const iguais = ref.every(p => Math.abs(p.valor - ref[0].valor) < 0.005);
+    const ultimoDif = !iguais && ref.slice(0, -1).every(p => Math.abs(p.valor - ref[0].valor) < 0.005);
     $('#nr-resumo').innerHTML = `<div class="conta">
       <div><span>Valor principal</span><b>${moeda(s.valor_principal)}</b></div>
       <div><span>Percentual</span><b>${pct(s.percentual)}</b></div>
       <div><span>Valor adicional</span><b>${moeda(s.acrescimo)}</b></div>
       <div class="total"><span style="color:inherit">Total</span><span>${moeda(soma)}</span></div></div>
-      <p style="margin:10px 0 0" class="forte">${st.parcelas.length}x de ${moeda(st.parcelas[0].valor)}${ultimoDif ? ' <span class="muted" style="font-weight:500">(última de ' + moeda(st.parcelas.at(-1).valor) + ')</span>' : iguais ? '' : ' <span class="muted" style="font-weight:500">(valores ajustados)</span>'}</p>
+      <p style="margin:10px 0 0" class="forte">${nFix ? nFix + ' mantida(s) + ' : ''}${ref.length}x de ${moeda(ref[0].valor)}${ultimoDif ? ' <span class="muted" style="font-weight:500">(última de ' + moeda(ref.at(-1).valor) + ')</span>' : iguais ? '' : ' <span class="muted" style="font-weight:500">(valores ajustados)</span>'}</p>
       <p class="muted" style="margin:2px 0 0">${FREQ[s.frequencia]}${s.frequencia === 'diario' && s.config.dias_cobranca && s.config.dias_cobranca.length < 7 ? ', ' + textoDias(s.config.dias_cobranca, true) : ''} · de ${dataBR(st.parcelas[0].vencimento)} a ${dataBR(st.parcelas.at(-1).vencimento)}</p>
-      ${st.editado && Math.abs(soma - s.total) > 0.004 ? '<div class="aviso">A soma das parcelas (' + moeda(soma) + ') é diferente do total calculado (' + moeda(s.total) + '). Será salvo o valor das parcelas.</div>' : ''}`;
+      ${s.fixas_qtd ? '<div class="aviso info" style="margin-bottom:0">' + s.fixas_qtd + ' parcela(s) com pagamento mantida(s) (' + moeda(s.ja_pago) + ' já recebido). As outras foram recalculadas.</div>' : ''}
+      ${st.editado && !s.fixas_qtd && Math.abs(soma - s.total) > 0.004 ? '<div class="aviso">A soma das parcelas (' + moeda(soma) + ') é diferente do total calculado (' + moeda(s.total) + '). Será salvo o valor das parcelas.</div>' : ''}`;
   };
   const desenharParcelas = () => {
     $('#nr-parcelas').innerHTML = `<div class="caderneta editavel"><div class="caderneta-cab"><div class="n">Nº</div><div>Vencimento</div><div>Valor</div></div>
-      <div class="caderneta-rolagem">${st.parcelas.map((p, i) => `<div class="caderneta-linha"><div class="n">${p.numero}</div>
+      <div class="caderneta-rolagem">${st.parcelas.map((p, i) => p.fixa
+        ? `<div class="caderneta-linha paga"><div class="n">${p.numero}</div><div class="c-venc num" style="padding-left:6px">${dataBR(p.vencimento)}</div>
+            <div class="c-valor num forte v" style="padding-left:6px">${moeda(p.valor)} <span class="selo ${p.status === 'pago' ? 's-pago' : 's-parcial'}">${p.status === 'pago' ? 'Paga' : 'Parcial'}</span></div></div>`
+        : `<div class="caderneta-linha"><div class="n">${p.numero}</div>
         <div class="c-venc"><input class="entrada" type="date" data-i="${i}" data-c="vencimento" value="${p.vencimento}"></div>
         <div class="c-valor"><input class="entrada num" inputmode="decimal" data-i="${i}" data-c="valor" value="${p.valor.toFixed(2).replace('.', ',')}"></div></div>`).join('')}</div>
       <div class="caderneta-rodape"><span class="muted" style="font-weight:500">Toque para ajustar uma parcela</span><button class="link-btn" id="nr-refazer" style="padding:0" ${st.editado ? '' : 'hidden'}>Desfazer ajustes</button></div></div>`;
@@ -647,12 +693,20 @@ Admin.novo = async el => {
   $('#nr-salvar').onclick = async () => {
     const b = $('#nr-salvar'); b.disabled = true;
     try {
+      if (editId) {
+        const r = await POST('/registros/' + editId + '/editar', { ...corpo(), descricao: st.descricao, observacoes: $('#nr-obs').value,
+                                                                  parcelas: st.editado ? st.parcelas.filter(p => !p.fixa) : undefined });
+        toast('Registro atualizado: ' + r.parcelas + ' parcelas, ' + moeda(r.total) + '.', 'ok');
+        location.hash = '#/cliente/' + st.cliente.id;
+        return;
+      }
       const r = await POST('/registros', { ...corpo(), client_id: st.cliente.id, descricao: st.descricao, observacoes: $('#nr-obs').value,
                                            parcelas: st.editado ? st.parcelas : undefined });
       toast('Registro criado: ' + r.parcelas + ' parcelas, ' + moeda(r.total) + '.', 'ok');
       location.hash = '#/cliente/' + st.cliente.id;
     } catch (e) { falha(e); b.disabled = false; }
   };
+  if (editId) simular();
   if (!st.cliente) setTimeout(() => { const i = $('#nr-cli-q'); if (i && window.innerWidth > 640) i.focus(); }, 50);
 };
 
