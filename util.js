@@ -57,6 +57,7 @@ const PADRAO = {
   descricoes_padrao: '["Compra","Dívida","Produto","Eletrodoméstico","Serviço","Acordo","Outro"]',
   dias_cobranca_padrao: '[0,1,2,3,4,5,6]',
   financeiro_investimento_auto: '1',
+  financeiro_zerado_em: '', // quando o admin zera o financeiro: só conta o que foi lançado depois disso
   categorias_despesa: '["Combustível","Aluguel","Energia","Internet","Salários","Material","Outros"]',
   lembrete_7d: '0', lembrete_3d: '1', lembrete_1d: '1', lembrete_hoje: '1',
   lembrete_atraso: '1', lembrete_atraso_intervalo: '3', lembrete_atraso_max: '30',

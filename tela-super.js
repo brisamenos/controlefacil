@@ -136,7 +136,7 @@ const ACOES_AUDIT = {
   registro_abatido: 'Valor abatido', registro_renegociado: 'Dívida renegociada',
   parcela_ajustada: 'Parcela ajustada', pagamento_registrado: 'Pagamento registrado', pagamento_estornado: 'Pagamento estornado',
   config_alterada: 'Configurações alteradas', modelo_alterado: 'Modelo de mensagem alterado', config_sistema: 'Configuração do sistema',
-  lancamento_criado: 'Lançamento financeiro criado', lancamento_editado: 'Lançamento financeiro editado', lancamento_excluido: 'Lançamento financeiro excluído',
+  financeiro_zerado: 'Extra zerado', financeiro_zerar_desfeito: 'Zerar o Extra desfeito', lancamento_criado: 'Lançamento financeiro criado', lancamento_editado: 'Lançamento financeiro editado', lancamento_excluido: 'Lançamento financeiro excluído',
   backup_criado: 'Backup criado', backup_baixado: 'Backup baixado', backup_exportado: 'Backup exportado',
   backup_telegram: 'Backup enviado ao Telegram', backup_importado: 'Backup importado', telegram_configurado: 'Telegram configurado',
 };

@@ -19,13 +19,13 @@ function periodo(q) {
 }
 
 function totais(adminId, de, ate) {
-  const auto = getConfig(adminId).financeiro_investimento_auto === '1';
+  const cfg = getConfig(adminId), auto = cfg.financeiro_investimento_auto === '1', corte = cfg.financeiro_zerado_em || '';
   const um = (sql, ...p) => db.prepare(sql).get(...p);
   const recebido = um(`SELECT COUNT(*) n, COALESCE(SUM(valor),0) v FROM payments WHERE admin_id = ? AND data_pagamento BETWEEN ? AND ?`, adminId, de, ate);
   const regs = auto ? um(`SELECT COUNT(*) n, COALESCE(SUM(valor_principal),0) v FROM records
                          WHERE admin_id = ? AND status <> 'cancelado' AND ${DATA_LOCAL('criado_em')} BETWEEN ? AND ?`, adminId, de, ate) : { n: 0, v: 0 };
   const man = {};
-  for (const t of TIPOS) man[t] = um(`SELECT COUNT(*) n, COALESCE(SUM(valor),0) v FROM lancamentos WHERE admin_id = ? AND tipo = ? AND data BETWEEN ? AND ?`, adminId, t, de, ate);
+  for (const t of TIPOS) man[t] = um(`SELECT COUNT(*) n, COALESCE(SUM(valor),0) v FROM lancamentos WHERE admin_id = ? AND tipo = ? AND data BETWEEN ? AND ? AND (tipo <> 'extra' OR criado_em >= ?)`, adminId, t, de, ate, corte); // Extra zerado: só conta o lançado depois
   const investimento = r2(regs.v + man.investimento.v);
   const saldo = r2(recebido.v + man.extra.v - investimento - man.despesa.v);
   return {
@@ -50,7 +50,7 @@ function saldoHoje(adminId) {
 }
 
 // GET /api/financeiro/caixa — usado na tela de novo registro
-router.get('/caixa', (req, res) => res.json(saldoHoje(req.user.id)));
+router.get('/caixa', (req, res) => res.json(saldoCaixa(req.user.id)));
 
 // Todas as movimentações de dinheiro, desde o começo (base do livro-caixa)
 function movimentosTodos(adminId, auto) {
@@ -86,6 +86,9 @@ function movimentosTodos(adminId, auto) {
   db.prepare(`SELECT * FROM lancamentos WHERE admin_id = ?`).all(adminId)
     .forEach(l => mov.push({ origem: 'lancamento', tipo: l.tipo, id: l.id, data: l.data, valor: l.valor, ordem: l.criado_em,
       titulo: l.descricao, detalhe: [l.categoria, l.forma].filter(Boolean).join(' · '), categoria: l.categoria, forma: l.forma, descricao: l.descricao }));
+  // Extra zerado: os Extras lançados antes disso não entram mais nas contas (empréstimos e pagamentos continuam contando)
+  const corte = getConfig(adminId).financeiro_zerado_em || '';
+  if (corte) for (let i = mov.length - 1; i >= 0; i--) if (mov[i].origem === 'lancamento' && mov[i].tipo === 'extra' && String(mov[i].ordem) < corte) mov.splice(i, 1);
   // ordem do livro-caixa: data, depois a hora em que foi lançado
   const PRI = { extra: 0, investimento: 1, despesa: 2, recebido: 3 }; // desempate no mesmo segundo
   mov.sort((a, b) => a.data < b.data ? -1 : a.data > b.data ? 1 : String(a.ordem).localeCompare(String(b.ordem)) || (PRI[a.tipo] - PRI[b.tipo]) || (a.id - b.id));
@@ -139,7 +142,7 @@ router.get('/', (req, res) => {
     de, ate, totais: t, caixa, hoje: saldoHoje(id), a_receber: aReceber(id),
     recebido_por_forma: Object.values(formas).sort((a, b) => b.total - a.total),
     saldo_inicial: saldoInicial, saldo_final: r2(saldoInicial + t.saldo), confere,
-    movimentos: doPeriodo.reverse().slice(0, 1000), categorias: cats,
+    movimentos: doPeriodo.reverse().slice(0, 1000), categorias: cats, zerado_em: getConfig(id).financeiro_zerado_em || '',
   });
 });
 
@@ -180,6 +183,23 @@ router.delete('/lancamentos/:id', (req, res) => {
   if (!atual) return res.status(404).json({ erro: 'Lançamento não encontrado.' });
   db.prepare('DELETE FROM lancamentos WHERE id = ?').run(atual.id);
   auditar(req, 'lancamento_excluido', 'lancamentos', atual.id, { tipo: atual.tipo, valor: atual.valor, descricao: atual.descricao, data: atual.data });
+  res.json({ ok: true });
+});
+
+// Zerar o Extra: os Extras lançados até agora deixam de contar (para lançar de novo o valor certo). Empréstimos e pagamentos continuam.
+router.post('/zerar', A.exigir('configuracoes'), (req, res) => {
+  const { setConfig } = require('./util');
+  const agora = db.prepare(`SELECT datetime('now') AS t`).get().t;
+  const antes = saldoCaixa(req.user.id);
+  setConfig(req.user.id, { financeiro_zerado_em: agora });
+  auditar(req, 'financeiro_zerado', 'settings', null, { em: agora, saldo_antes: antes.saldo, entradas_antes: antes.entradas, saidas_antes: antes.saidas });
+  res.json({ ok: true, zerado_em: agora });
+});
+router.post('/desfazer-zerar', A.exigir('configuracoes'), (req, res) => {
+  const { setConfig } = require('./util');
+  const era = getConfig(req.user.id).financeiro_zerado_em;
+  setConfig(req.user.id, { financeiro_zerado_em: '' });
+  auditar(req, 'financeiro_zerar_desfeito', 'settings', null, { era });
   res.json({ ok: true });
 });
 
