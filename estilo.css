@@ -392,6 +392,12 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 @media (max-width: 380px) { .dia-sem { font-size: 12px; padding: 8px 0 6px; } }
 
 /* Financeiro */
+.resumo-fin { background: var(--papel); border: 1px solid var(--linha); border-radius: var(--r); overflow: hidden; }
+.resumo-fin-linha { display: flex; gap: 8px; align-items: baseline; padding: 14px 18px; border-bottom: 1px solid var(--pauta); font-size: 17px; }
+.resumo-fin-linha:nth-child(even) { background: #F8F9FB; }
+.resumo-fin-linha b { font-weight: 700; }
+.resumo-fin-linha.saldo { border-bottom: 0; font-size: 19px; }
+.resumo-fin-linha.saldo span { font-weight: 800; }
 .extrato { background: var(--papel); border: 1px solid var(--linha); border-radius: var(--r); overflow: hidden; }
 .extrato-linha { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--pauta); }
 .extrato-linha:nth-child(even) { background: #F8F9FB; }

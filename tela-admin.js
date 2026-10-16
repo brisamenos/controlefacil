@@ -1204,14 +1204,20 @@ Admin.financeiro = async el => {
       <div><span>Saldo em caixa agora</span><strong>${fmtS(cx.saldo)}</strong><small>Tudo o que entrou menos tudo o que saiu, desde o começo</small></div>
       <div class="secundario"><span>Entrou no total</span><strong>${moeda(cx.entradas)}</strong></div>
       <div class="secundario"><span>Saiu no total</span><strong>${moeda(cx.saidas)}</strong></div></div>`;
-    $('#fn-extrato').innerHTML = `<div class="extrato">
+    const rs = (rot, v, cor) => `<div class="resumo-fin-linha"><b>${rot}:</b><span${cor ? ' style="color:' + cor + '"' : ''}>${fmtS(v)}</span></div>`;
+    let aberto = false; try { aberto = sessionStorage.getItem('cf_fin_det') === '1'; } catch (e) {}
+    $('#fn-extrato').innerHTML = `<div class="resumo-fin">
+      ${rs('Total Recebido', t.recebido.total)}${rs('Total Investimento', inv.total)}${rs('Total Extra', t.extra.total)}${rs('Total Despesa', t.despesa.total)}
+      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${t.saldo < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(t.saldo)}</span></div></div>
+    <details id="fn-det" class="mt"${aberto ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Ver detalhes</summary><div class="extrato">
       ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}
       ${linha('extra', t.extra.total, t.extra.qtd + ' lançamento(s)')}
       ${linha('despesa', t.despesa.total, t.despesa.qtd + ' lançamento(s)')}
       <div class="extrato-linha"><span class="ic t-extra">%</span><span class="rot"><b>Lucro dos juros recebido</b><small>Parte do recebido que é acréscimo (juros)</small></span><span class="val v-extra">${moeda(t.recebido.juros)}</span></div>
       <div class="extrato-saldo ${t.saldo >= 0 ? 'pos' : 'neg'}"><div><b>Saldo do período</b><span>Recebido + Extra − Investimento − Despesa</span></div><span class="val">${t.saldo < 0 ? '− ' + moeda(-t.saldo) : moeda(t.saldo)}</span></div>
-    </div>`;
+    </div></details>`;
+    $('#fn-det').addEventListener('toggle', e => { try { sessionStorage.setItem('cf_fin_det', e.target.open ? '1' : '0'); } catch (x) {} });
   };
   const desenharReceber = () => {
     const r = est.dados.a_receber;
