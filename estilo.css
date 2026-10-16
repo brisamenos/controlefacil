@@ -396,7 +396,9 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: 14px; }
 .resumo-fin-linha { display: flex; gap: 8px; align-items: baseline; padding: 14px 18px; border-bottom: 1px solid var(--pauta); font-size: 17px; }
 .resumo-fin-linha:nth-child(even) { background: #F8F9FB; }
 .resumo-fin-linha b { font-weight: 700; }
-.resumo-fin-linha.saldo { border-bottom: 0; font-size: 19px; }
+.resumo-fin-linha.saldo { font-size: 19px; }
+.resumo-fin-linha.anterior { background: var(--tinta-suave); }
+.resumo-fin-nota { padding: 10px 18px 14px; font-size: 13px; color: var(--muted, #667085); }
 .resumo-fin-linha.saldo span { font-weight: 800; }
 .extrato { background: var(--papel); border: 1px solid var(--linha); border-radius: var(--r); overflow: hidden; }
 .extrato-linha { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--pauta); }

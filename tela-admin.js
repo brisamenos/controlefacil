@@ -1206,9 +1206,13 @@ Admin.financeiro = async el => {
       <div class="secundario"><span>Saiu no total</span><strong>${moeda(cx.saidas)}</strong></div></div>`;
     const rs = (rot, v, cor) => `<div class="resumo-fin-linha"><b>${rot}:</b><span${cor ? ' style="color:' + cor + '"' : ''}>${fmtS(v)}</span></div>`;
     let aberto = false; try { aberto = sessionStorage.getItem('cf_fin_det') === '1'; } catch (e) {}
+    const ini = est.dados.saldo_inicial || 0, fim = est.dados.saldo_final ?? (ini + t.saldo);
+    const rotIni = est.per === 'hoje' ? 'Ficou do dia anterior' : est.de === est.ate ? 'Ficou do dia anterior' : 'Saldo anterior';
     $('#fn-extrato').innerHTML = `<div class="resumo-fin">
+      <div class="resumo-fin-linha anterior"><b>${rotIni}:</b><span>${fmtS(ini)}</span></div>
       ${rs('Total Recebido', t.recebido.total)}${rs('Total Investimento', inv.total)}${rs('Total Extra', t.extra.total)}${rs('Total Despesa', t.despesa.total)}
-      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${t.saldo < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(t.saldo)}</span></div></div>
+      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${fim < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(fim)}</span></div>
+      <div class="resumo-fin-nota">${est.per === 'hoje' || est.de === est.ate ? 'O que ficou do dia anterior entra sozinho. Não precisa lançar de novo como Extra.' : 'O saldo anterior é o que tinha em caixa antes do período começar.'}${t.saldo !== 0 ? ' Movimento do período: ' + (t.saldo > 0 ? '+ ' : '') + fmtS(t.saldo) + '.' : ''}</div></div>
     <details id="fn-det" class="mt"${aberto ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Ver detalhes</summary><div class="extrato">
       ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}
