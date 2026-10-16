@@ -835,9 +835,9 @@ Admin.novo = async el => {
       const fica = caixa.saldo - usa;
       const fmtC = v => v < 0 ? '− ' + moeda(-v) : moeda(v);
       caixaHtml = `<div class="conta" style="margin-top:12px;padding-top:8px;border-top:1px solid var(--linha)">
-        <div><span>Saldo geral</span><b>${fmtC(caixa.saldo)}</b></div>
+        <div><span>Extra disponível</span><b>${fmtC(caixa.saldo)}</b></div>
         <div><span>Fica depois</span><b style="color:${fica < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtC(fica)}</b></div></div>
-        ${fica < 0 ? '<div class="aviso" style="margin-bottom:0">O valor é maior que o saldo geral. Se entrou dinheiro novo, lance um <b>Extra</b> no Financeiro. Você pode salvar assim mesmo.</div>' : ''}`;
+        ${fica < 0 ? '<div class="aviso" style="margin-bottom:0">O valor é maior que o Extra disponível. Se entrou dinheiro novo, lance um <b>Extra</b> no Financeiro. Você pode salvar assim mesmo.</div>' : ''}`;
     }
     const livres = st.parcelas.filter(p => !p.fixa), nFix = st.parcelas.length - livres.length;
     const ref = livres.length ? livres : st.parcelas;
@@ -1202,7 +1202,7 @@ Admin.financeiro = async el => {
     const cx = est.dados.caixa, hj = est.dados.hoje || { entradas: 0, saidas: 0, saldo: 0 };
     const fmtS = v => v < 0 ? '− ' + moeda(-v) : moeda(v);
     $('#fn-caixa').innerHTML = `<div class="faixa-hoje faixa-caixa">
-      <div><span>Saldo geral</span><strong>${fmtS(cx.saldo)}</strong><small>Extra − empréstimos + o que os clientes já pagaram − despesas, desde o começo</small></div>
+      <div><span>Extra disponível</span><strong>${fmtS(cx.saldo)}</strong><small>Extra colocado − empréstimos + o que os clientes já pagaram − despesas</small></div>
       <div class="secundario"><span>Entrou hoje</span><strong>${moeda(hj.entradas)}</strong></div>
       <div class="secundario"><span>Saiu hoje</span><strong>${moeda(hj.saidas)}</strong></div></div>`;
     const g = est.dados.geral || t, ehHoje = est.de === hojeISO() && est.ate === hojeISO();
@@ -1211,9 +1211,9 @@ Admin.financeiro = async el => {
     let aberto = false; try { aberto = sessionStorage.getItem('cf_fin_det') === '1'; } catch (e) {}
     $('#fn-extrato').innerHTML = `<div class="resumo-fin">
       <div class="resumo-fin-linha cab"><b></b><span class="rf-per">${rotPer}</span><span class="rf-ger">Desde o começo</span></div>
-      ${rs('Recebido', t.recebido.total, g.recebido.total)}${rs('Investimento', inv.total, g.investimento.total)}${rs('Extra', t.extra.total, g.extra.total)}${rs('Despesa', t.despesa.total, g.despesa.total)}
-      <div class="resumo-fin-linha saldo"><b>Saldo em caixa</b><span style="color:${est.dados.saldo_final < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(est.dados.saldo_final)}</span></div>
-      <div class="resumo-fin-nota">Saldo em caixa = Extra + Recebido − Investimento − Despesa, somando <b>desde o começo</b>${ehHoje ? '' : ' até o fim do período'}. A coluna "${rotPer}" mostra só o que aconteceu ${ehHoje ? 'hoje' : 'no período'}.</div></div>
+      ${rs('Recebido', t.recebido.total, g.recebido.total)}${rs('Investimento', inv.total, g.investimento.total)}${rs('Despesa', t.despesa.total, g.despesa.total)}
+      <div class="resumo-fin-linha saldo"><b>Extra disponível</b><span style="color:${est.dados.saldo_final < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(est.dados.saldo_final)}</span></div>
+      <div class="resumo-fin-nota">Extra disponível = Extra colocado (<b>${moeda(g.extra.total)}</b>) − Investimento + Recebido − Despesa${ehHoje ? '' : ' até o fim do período'}. Cada empréstimo desconta e cada pagamento soma.</div></div>
     <details id="fn-det" class="mt"${aberto ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Ver detalhes</summary><div class="extrato">
       ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}
