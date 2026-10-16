@@ -139,7 +139,7 @@ router.get('/', (req, res) => {
   let cats = [];
   try { cats = JSON.parse(getConfig(id).categorias_despesa); } catch (e) {}
   res.json({
-    de, ate, totais: t, caixa, hoje: saldoHoje(id), a_receber: aReceber(id),
+    de, ate, totais: t, caixa, geral: totais(id, '0000-01-01', '9999-12-31'), hoje: saldoHoje(id), a_receber: aReceber(id),
     recebido_por_forma: Object.values(formas).sort((a, b) => b.total - a.total),
     saldo_inicial: saldoInicial, saldo_final: r2(saldoInicial + t.saldo), confere,
     movimentos: doPeriodo.reverse().slice(0, 1000), categorias: cats, zerado_em: getConfig(id).financeiro_zerado_em || '',

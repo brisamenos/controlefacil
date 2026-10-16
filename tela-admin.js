@@ -1205,12 +1205,15 @@ Admin.financeiro = async el => {
       <div><span>Saldo geral</span><strong>${fmtS(cx.saldo)}</strong><small>Extra − empréstimos + o que os clientes já pagaram − despesas, desde o começo</small></div>
       <div class="secundario"><span>Entrou hoje</span><strong>${moeda(hj.entradas)}</strong></div>
       <div class="secundario"><span>Saiu hoje</span><strong>${moeda(hj.saidas)}</strong></div></div>`;
-    const rs = (rot, v, cor) => `<div class="resumo-fin-linha"><b>${rot}:</b><span${cor ? ' style="color:' + cor + '"' : ''}>${fmtS(v)}</span></div>`;
+    const g = est.dados.geral || t, ehHoje = est.de === hojeISO() && est.ate === hojeISO();
+    const rotPer = ehHoje ? 'Hoje' : est.de === est.ate ? dataBR(est.de) : 'No período';
+    const rs = (rot, v, vg) => `<div class="resumo-fin-linha"><b>${rot}</b><span class="rf-per">${fmtS(v)}</span><span class="rf-ger">${fmtS(vg)}</span></div>`;
     let aberto = false; try { aberto = sessionStorage.getItem('cf_fin_det') === '1'; } catch (e) {}
     $('#fn-extrato').innerHTML = `<div class="resumo-fin">
-      ${rs('Total Recebido', t.recebido.total)}${rs('Total Investimento', inv.total)}${rs('Total Extra', t.extra.total)}${rs('Total Despesa', t.despesa.total)}
-      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${est.dados.saldo_final < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(est.dados.saldo_final)}</span></div>
-      <div class="resumo-fin-nota">Saldo é o dinheiro em caixa${est.de === hojeISO() && est.ate === hojeISO() ? ' agora' : ' no fim do período'}: tudo o que entrou menos tudo o que saiu, desde o começo. A conta de entradas e saídas só do período fica no <b>Livro-caixa</b>.</div></div>
+      <div class="resumo-fin-linha cab"><b></b><span class="rf-per">${rotPer}</span><span class="rf-ger">Desde o começo</span></div>
+      ${rs('Recebido', t.recebido.total, g.recebido.total)}${rs('Investimento', inv.total, g.investimento.total)}${rs('Extra', t.extra.total, g.extra.total)}${rs('Despesa', t.despesa.total, g.despesa.total)}
+      <div class="resumo-fin-linha saldo"><b>Saldo em caixa</b><span style="color:${est.dados.saldo_final < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(est.dados.saldo_final)}</span></div>
+      <div class="resumo-fin-nota">Saldo em caixa = Extra + Recebido − Investimento − Despesa, somando <b>desde o começo</b>${ehHoje ? '' : ' até o fim do período'}. A coluna "${rotPer}" mostra só o que aconteceu ${ehHoje ? 'hoje' : 'no período'}.</div></div>
     <details id="fn-det" class="mt"${aberto ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Ver detalhes</summary><div class="extrato">
       ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}
