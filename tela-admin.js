@@ -831,12 +831,14 @@ Admin.novo = async el => {
     const s = st.sim, soma = st.parcelas.reduce((t, p) => t + p.valor, 0);
     let caixaHtml = '';
     if (caixa && caixa.automatico) {
-      const usa = editId ? s.valor_principal - (reg.valor_principal || 0) : s.valor_principal;
+      const regHoje = editId && reg.criado_em && new Date(String(reg.criado_em).replace(' ', 'T') + (/Z$|[+-]\d\d:?\d\d$/.test(reg.criado_em) ? '' : 'Z')).toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' }) === hojeISO();
+      const usa = editId ? (regHoje ? s.valor_principal - (reg.valor_principal || 0) : 0) : s.valor_principal;
       const fica = caixa.saldo - usa;
+      const fmtC = v => v < 0 ? '− ' + moeda(-v) : moeda(v);
       caixaHtml = `<div class="conta" style="margin-top:12px;padding-top:8px;border-top:1px solid var(--linha)">
-        <div><span>Saldo em caixa agora</span><b>${moeda(caixa.saldo)}</b></div>
-        <div><span>Fica no caixa depois</span><b style="color:${fica < 0 ? 'var(--margem)' : 'var(--verde)'}">${fica < 0 ? '− ' + moeda(-fica) : moeda(fica)}</b></div></div>
-        ${fica < 0 ? '<div class="aviso" style="margin-bottom:0">O valor é maior que o seu saldo em caixa. Você pode salvar assim mesmo.</div>' : ''}`;
+        <div><span>Saldo de hoje</span><b>${fmtC(caixa.saldo)}</b></div>
+        <div><span>Fica hoje depois</span><b style="color:${fica < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtC(fica)}</b></div></div>
+        ${fica < 0 ? '<div class="aviso" style="margin-bottom:0">O valor é maior que o saldo de hoje. Se você tem esse dinheiro, lance um <b>Extra</b> no Financeiro. Você pode salvar assim mesmo.</div>' : ''}`;
     }
     const livres = st.parcelas.filter(p => !p.fixa), nFix = st.parcelas.length - livres.length;
     const ref = livres.length ? livres : st.parcelas;
@@ -1198,21 +1200,18 @@ Admin.financeiro = async el => {
     const subInv = inv.automatico
       ? `${inv.qtd_registros} registro(s)${inv.qtd_manual ? ' + ' + inv.qtd_manual + ' lançamento(s)' : ''}`
       : `${inv.qtd_manual} lançamento(s)`;
-    const cx = est.dados.caixa;
+    const cx = est.dados.hoje || est.dados.caixa;
     const fmtS = v => v < 0 ? '− ' + moeda(-v) : moeda(v);
     $('#fn-caixa').innerHTML = `<div class="faixa-hoje faixa-caixa">
-      <div><span>Saldo em caixa agora</span><strong>${fmtS(cx.saldo)}</strong><small>Tudo o que entrou menos tudo o que saiu, desde o começo</small></div>
-      <div class="secundario"><span>Entrou no total</span><strong>${moeda(cx.entradas)}</strong></div>
-      <div class="secundario"><span>Saiu no total</span><strong>${moeda(cx.saidas)}</strong></div></div>`;
+      <div><span>Saldo de hoje · ${dataBR(cx.data || hojeISO())}</span><strong>${fmtS(cx.saldo)}</strong><small>Começa do zero todo dia: o que entrou hoje menos o que saiu hoje</small></div>
+      <div class="secundario"><span>Entrou hoje</span><strong>${moeda(cx.entradas)}</strong></div>
+      <div class="secundario"><span>Saiu hoje</span><strong>${moeda(cx.saidas)}</strong></div></div>`;
     const rs = (rot, v, cor) => `<div class="resumo-fin-linha"><b>${rot}:</b><span${cor ? ' style="color:' + cor + '"' : ''}>${fmtS(v)}</span></div>`;
     let aberto = false; try { aberto = sessionStorage.getItem('cf_fin_det') === '1'; } catch (e) {}
-    const ini = est.dados.saldo_inicial || 0, fim = est.dados.saldo_final ?? (ini + t.saldo);
-    const rotIni = est.per === 'hoje' ? 'Ficou do dia anterior' : est.de === est.ate ? 'Ficou do dia anterior' : 'Saldo anterior';
     $('#fn-extrato').innerHTML = `<div class="resumo-fin">
-      <div class="resumo-fin-linha anterior"><b>${rotIni}:</b><span>${fmtS(ini)}</span></div>
       ${rs('Total Recebido', t.recebido.total)}${rs('Total Investimento', inv.total)}${rs('Total Extra', t.extra.total)}${rs('Total Despesa', t.despesa.total)}
-      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${fim < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(fim)}</span></div>
-      <div class="resumo-fin-nota">${est.per === 'hoje' || est.de === est.ate ? 'O que ficou do dia anterior entra sozinho. Não precisa lançar de novo como Extra.' : 'O saldo anterior é o que tinha em caixa antes do período começar.'}${t.saldo !== 0 ? ' Movimento do período: ' + (t.saldo > 0 ? '+ ' : '') + fmtS(t.saldo) + '.' : ''}</div></div>
+      <div class="resumo-fin-linha saldo"><b>Saldo:</b><span style="color:${t.saldo < 0 ? 'var(--margem)' : 'var(--verde)'}">${fmtS(t.saldo)}</span></div>
+      <div class="resumo-fin-nota">Cada dia começa do zero: Recebido + Extra − Investimento − Despesa. O dinheiro que sobrou do dia anterior entra lançando um <b>Extra</b>.</div></div>
     <details id="fn-det" class="mt"${aberto ? ' open' : ''}><summary style="cursor:pointer;font-weight:600;margin-bottom:10px">Ver detalhes</summary><div class="extrato">
       ${linha('recebido', t.recebido.total, t.recebido.qtd + ' pagamento(s) · ' + moeda(t.recebido.capital) + ' de volta + ' + moeda(t.recebido.juros) + ' de lucro')}
       ${linha('investimento', inv.total, subInv)}

@@ -43,8 +43,14 @@ function saldoCaixa(adminId) {
   return { saldo: t.saldo, entradas: t.entradas, saidas: t.saidas, automatico: t.investimento.automatico };
 }
 
+// Saldo de hoje: cada dia começa do zero (o que entrou hoje − o que saiu hoje)
+function saldoHoje(adminId) {
+  const h = hoje(), t = totais(adminId, h, h);
+  return { data: h, saldo: t.saldo, entradas: t.entradas, saidas: t.saidas, automatico: t.investimento.automatico };
+}
+
 // GET /api/financeiro/caixa — usado na tela de novo registro
-router.get('/caixa', (req, res) => res.json(saldoCaixa(req.user.id)));
+router.get('/caixa', (req, res) => res.json(saldoHoje(req.user.id)));
 
 // Todas as movimentações de dinheiro, desde o começo (base do livro-caixa)
 function movimentosTodos(adminId, auto) {
@@ -130,7 +136,7 @@ router.get('/', (req, res) => {
   let cats = [];
   try { cats = JSON.parse(getConfig(id).categorias_despesa); } catch (e) {}
   res.json({
-    de, ate, totais: t, caixa, a_receber: aReceber(id),
+    de, ate, totais: t, caixa, hoje: saldoHoje(id), a_receber: aReceber(id),
     recebido_por_forma: Object.values(formas).sort((a, b) => b.total - a.total),
     saldo_inicial: saldoInicial, saldo_final: r2(saldoInicial + t.saldo), confere,
     movimentos: doPeriodo.reverse().slice(0, 1000), categorias: cats,
